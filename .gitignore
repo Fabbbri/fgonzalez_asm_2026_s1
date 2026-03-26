@@ -1,0 +1,85 @@
+# ─── Python ───────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+*.so
+
+# Entornos virtuales
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# ─── LaTeX ────────────────────────────────────────────────
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.log
+*.lot
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+*.xdv
+
+# Carpeta de compilación
+out/
+latex-build/
+
+# ─── IDEs y editores ──────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ─── Datos y resultados generados ─────────────────────────
+*.csv
+*.npy
+*.npz
+*.h5
+*.pkl
+
+# Imágenes generadas por scripts (no las del informe)
+plots/
+results/
+
+# ─── Microcontrolador / Embedded ──────────────────────────
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+CMakeFiles/
+cmake_install.cmake
+CMakeCache.txt
+
+# ─── Misceláneos ──────────────────────────────────────────
+*.zip
+*.tar.gz
+*.log
