@@ -85,8 +85,9 @@ magnitud = \sqrt{a^2 + b^2}
 fase = tan^{-1}(b/a)
 ```
 
+Se tiene que la energía es:
 ```math
-energía = magnitud^2
+energía = \sum|x[n]|^2
 ```
 
 Se tiene el siguiente pseudocódigo:
