@@ -85,9 +85,15 @@ magnitud = \sqrt{a^2 + b^2}
 fase = tan^{-1}(b/a)
 ```
 
-Se tiene que la energía es:
+Se tiene que la energía total es:
 ```math
 energía = \sum|x[n]|^2
+```
+
+y la energia por frecuencia está dada por:
+
+```python
+energia_frec = |X(k)^2|
 ```
 
 Se tiene el siguiente pseudocódigo:
@@ -189,3 +195,8 @@ function FFT(x):
 
     return X
 ```
+
+## Bitácora de Implementación
+
+### DFT - 26 de marzo del 2026
+
