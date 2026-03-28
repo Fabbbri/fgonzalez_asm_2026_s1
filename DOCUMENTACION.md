@@ -226,10 +226,23 @@ En general, el método 3 no es de los mejores debido a que se basa en una suposi
 
 ### 3.2 Implementación: Compresión usando FFT
 
-La implementación de la compresión se puede hacer con cualquiera de los 3 métodos. Se procederá muestra con el siguiente pseudocódigo:
+La implementación de la compresión se puede hacer con cualquiera de los 3 métodos. Se eligió el método 2 para poder relacionarlo directamente con la energía. La relación de Parseval indica puede generalizarse a:
+
+```
+
+```
+
+el porcentaje de precisión esperado. Se sabe que la ley de Se muestra como se procederá con el siguiente pseudocódigo:
 
 ```python
 # Método de ordenar y delimitar
+# Criterio de energía acumulada 95%
+
+energia_total = sumatoria(abs(x))**2
+
+energia_acumulada = 0 
+
+
 ```
 
 
