@@ -146,6 +146,10 @@ donde el `twiddle factor` $W_{N,k} = e^{-j\frac{2\pi}{N}kn}$
 Se tiene el siguiente pseudocódigo:
 
 ```python
+# Fast Fourier Transformation 
+# Algoritmo radix-2 de Cooley-Tukey
+# Sirve para muestreos de potencias de 2 
+# (Por ejemplo: fs = 2^12 = 4096 muestras)
 function FFT(x):
     N = len(x)
 

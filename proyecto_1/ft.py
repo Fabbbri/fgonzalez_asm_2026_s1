@@ -5,6 +5,7 @@ import time
 # Archivo que contiene la función de DFT, FFT y para graficar
 # ver pseudocódigo en DOCUMENTACION.md
 
+# TESTED
 def dft(x):
     '''
     Entrada: señal x (muestras discretas)
@@ -31,8 +32,35 @@ def dft(x):
     
     return X, final
 
+# IMPLEMENTAR
+def fft_rec(x):
+    '''
+    Transformada Rápida de Fourier Recursiva
 
-def graficar_dft(x, t, fs):
+    Entrada: Entrada: señal x (muestras discretas)
+    Salida: Componente en frecuencia k
+    '''
+
+    #TODO
+
+# En microcontroladores a veces es mejor la forma iterativa...
+
+#IMPLEMENTAR
+def comprimir():
+    '''
+    Entrada: 
+    Salida: 
+    '''
+
+#IMPLEMENTAR
+def ifft():
+    '''
+    Entrada:
+    Salida: 
+    '''
+
+# TESTED
+def graficar(x, t, fs):
     '''
     Recibe una señal
     vector eje tiempo de muestreo 
@@ -47,11 +75,19 @@ def graficar_dft(x, t, fs):
 
     print(f"DFT ejecutado exitosamente \nDuración: {tiempo_dft}")
 
+    # ==============================
+    # Verificación de error
+    # ==============================
+
     # Calcular la fft con numpy para verificar
     X_np = np.fft.fft(x)
 
     print("Error obtenido:", np.linalg.norm(np.array(X) - X_np))
     print("="*40)
+
+    # ==============================
+    # Preparar datos
+    # ==============================
 
     frecuencias = np.fft.fftfreq(len(x), d=1/fs)
     
@@ -74,7 +110,7 @@ def graficar_dft(x, t, fs):
 
     # 1. Señal original
     plt.subplot(3, 1, 1)
-    plt.plot(t, x, label="x(t) = sin(2π·5t)")
+    plt.plot(t, x, label="x(t)")
     plt.title("Señal en el tiempo")
     plt.xlabel("Tiempo (s)")
     plt.ylabel("Amplitud")
@@ -87,7 +123,6 @@ def graficar_dft(x, t, fs):
     plt.title("Espectro de magnitud")
     plt.xlabel("Frecuencia (Hz)")
     plt.ylabel("Magnitud")
-    plt.xlim(-15, 15) # zona de relevancia (picos en -5 y 5)
     plt.legend()
     plt.grid()
 
@@ -97,7 +132,7 @@ def graficar_dft(x, t, fs):
     plt.title("Espectro de fase")
     plt.xlabel("Frecuencia (Hz)")
     plt.ylabel("Fase (rad)")
-    plt.xlim(-15, 15) # zona de relevancia (picos en -5 y 5)
+    # plt.xlim(-15, 15) # zona de relevancia (picos en -5 y 5)
     plt.legend()
     plt.grid()
 
