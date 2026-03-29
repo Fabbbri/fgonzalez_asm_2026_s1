@@ -232,41 +232,47 @@ La implementación de la compresión se puede hacer con cualquiera de los 3 mét
 energía = \sum|x[n]|^2 = \sum|X[k]|^2
 ```
 
+Si no, sería:
+
+```math
+energía = \sum|x[n]|^2 = \frac{1}{N}\sum|X[k]|^2
+```
+
 Por lo tanto, en ambos dominios la energía total es la misma. De esta forma, es posible mantener el porcentaje de precisión esperado si se tiene el valor de la energía total y un límite que no puede sobrepasarse. Así, se ordenará y delimitará hasta este límite (método 2) con el siguiente pseudocódigo:
 
 ```python
-# Método de ordenar y delimitar
 function comprimir(x):
-    # Criterio de energía acumulada 95%
 
-    energia_total = sumatoria(abs(x))**2
+    X = fft(x)
 
-    limite = (energía_total * 95 )/100
+    # Energía total
+    energia_total = sum(|X[k]|^2)
+
+    limite = 0.95 * energia_total
+
+    # Crear lista de (k, X[k])
+    lista = [(k, X[k]) for k in range(N)]
+
+    # Ordenar por magnitud descendente
+    lista = sort(lista, key = |X[k]|, descendente=True)
 
     energia_acumulada = 0
-    contador = 0
-
     X_compr = []
 
-    # Realizar FFT... devuelve X[k]
-    X[k] = fft()
+    for (k, valor) in lista:
 
-    # 1. Asegurarse de que esté ordenada
+        energia_acumulada += |valor|^2
+        X_compr.append((k, valor))
 
-    X[k] = ordenar(X[k])
+        if energia_acumulada >= limite:
+            break
 
-    # Guardar
-    while energia_acumulada <= limite:
-        X_compr.append(X[contador])
-        energia_acumuada += X[contador]
-        contador ++
-
-    # X_compr contiene la version comprimida
     return X_compr
 ```
 
-
 ### 3.2 Reconstrucción
+
+
 
 ## Bitácora de Implementación
 
