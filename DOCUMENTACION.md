@@ -226,25 +226,44 @@ En general, el método 3 no es de los mejores debido a que se basa en una suposi
 
 ### 3.2 Implementación: Compresión usando FFT
 
-La implementación de la compresión se puede hacer con cualquiera de los 3 métodos. Se eligió el método 2 para poder relacionarlo directamente con la energía. La relación de Parseval indica puede generalizarse a:
+La implementación de la compresión se puede hacer con cualquiera de los 3 métodos. Se eligió el método 2 para poder relacionarlo directamente con la energía. La relación de Parseval en espacios unitarios puede generalizarse a:
 
+```math
+energía = \sum|x[n]|^2 = \sum|X[k]|^2
 ```
 
-```
-
-el porcentaje de precisión esperado. Se sabe que la ley de Se muestra como se procederá con el siguiente pseudocódigo:
+Por lo tanto, en ambos dominios la energía total es la misma. De esta forma, es posible mantener el porcentaje de precisión esperado si se tiene el valor de la energía total y un límite que no puede sobrepasarse. Así, se ordenará y delimitará hasta este límite (método 2) con el siguiente pseudocódigo:
 
 ```python
 # Método de ordenar y delimitar
-# Criterio de energía acumulada 95%
+function comprimir(x):
+    # Criterio de energía acumulada 95%
 
-energia_total = sumatoria(abs(x))**2
+    energia_total = sumatoria(abs(x))**2
 
-energia_acumulada = 0 
+    limite = (energía_total * 95 )/100
 
+    energia_acumulada = 0
+    contador = 0
 
+    X_compr = []
+
+    # Realizar FFT... devuelve X[k]
+    X[k] = fft()
+
+    # 1. Asegurarse de que esté ordenada
+
+    X[k] = ordenar(X[k])
+
+    # Guardar
+    while energia_acumulada <= limite:
+        X_compr.append(X[contador])
+        energia_acumuada += X[contador]
+        contador ++
+
+    # X_compr contiene la version comprimida
+    return X_compr
 ```
-
 
 
 ### 3.2 Reconstrucción
