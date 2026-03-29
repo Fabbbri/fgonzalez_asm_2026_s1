@@ -16,7 +16,7 @@ Cada una de estas etapas requiere de su implementación programada y en hardware
 
 ## 2. Experimentos con DFT
 
-El objetivo de esta sección en explicar como se implementan en Python los algoritmos `DFT` y `FFT`, la representación compleja de señales además de analizar magnitud y fase.
+El objetivo de esta sección en explicar como se implementan en Python los algoritmos `DFT` y `FFT`, la representación compleja de señales además de analizar magnitud y fase. Todos los códigos generados de esta etapa corresponen al archivo `ft.py`.
 
 ### 2.1. Teoría de DFT
 
@@ -200,7 +200,111 @@ function FFT(x):
     return X
 ```
 
+## 3. Compresión y reconstrucción
+
+En esta etapa se aplican técnicas de análisis espectral complejo para determinar cuántas componentes son necesarias para preservar al menos el 95% de la energía total. Todos lo correspondiente a esta etapa se encuentra en el archivo `signal-proc.py`. 
+
+### 3.1. Teoría: Compresión usando FFT
+
+Una vez la señal ha sido transformada al dominio de la frecuencia es posible comprimir la señal reduciendo la información en `X[k]`.
+
+```
+Entrada: X[k]
+Salida: Xc[k] -> lista reducida
+```
+
+Para comprimir la señal hay varios métodos.
+
+1. `Umbral (thresholding)`: Consiste en igualar a 0 cualquier coeficiente cuya magnitud no sea lo suficientemente relevante (en comparación con un valor `T`)
+
+2. `Ordenar y delimitar`: 
+Se ordena por magnitud y se elimina `K` cantidad de los coeficientes más pequeños.
+
+3. `Recorte de banda (low-pass)`: Se dejan las frecuencias bajas debido a que contienen la forma general y las altas se consideran como ruido.
+
+En general, el método 3 no es de los mejores debido a que se basa en una suposición de una señal ordinaria. El método 1 es bueno pero depende de un valor `T` que sea óptimo para cada función. La mejor opción es el método 2 pues el `K` puede ser definido en base a la frecuencia.
+
+### 3.2 Implementación: Compresión usando FFT
+
+La implementación de la compresión se puede hacer con cualquiera de los 3 métodos. Se eligió el método 2 para poder relacionarlo directamente con la energía. La relación de Parseval en espacios unitarios puede generalizarse a:
+
+```math
+energía = \sum|x[n]|^2 = \sum|X[k]|^2
+```
+
+Si no, sería:
+
+```math
+energía = \sum|x[n]|^2 = \frac{1}{N}\sum|X[k]|^2
+```
+
+Por lo tanto, en ambos dominios la energía total es la misma. De esta forma, es posible mantener el porcentaje de precisión esperado si se tiene el valor de la energía total y un límite que no puede sobrepasarse. Así, se ordenará y delimitará hasta este límite (método 2) con el siguiente pseudocódigo:
+
+```python
+function comprimir(x):
+
+    X = fft(x)
+
+    # Energía total
+    energia_total = sum(|X[k]|^2)
+
+    limite = 0.95 * energia_total
+
+    # Crear lista de (k, X[k])
+    lista = [(k, X[k]) for k in range(N)]
+
+    # Ordenar por magnitud descendente
+    lista = sort(lista, key = |X[k]|, descendente=True)
+
+    energia_acumulada = 0
+    X_compr = []
+
+    for (k, valor) in lista:
+
+        energia_acumulada += |valor|^2
+        X_compr.append((k, valor))
+
+        if energia_acumulada >= limite:
+            break
+
+    return X_compr
+```
+
+### 3.2 Reconstrucción
+
+
+
 ## Bitácora de Implementación
 
-### DFT - 26 de marzo del 2026
+### DFT - 26 y 27 de marzo del 2026
 
+Se implementó una interfaz de usuario en consola para elegir entre 3 señales de prueba (cada una más compleja que la anterior). Se ejecutaron los tests y las gráficas generadas fueron las siguientes:
+
+#### Señal Simple: $ sen(2\pi5t)$
+![Image: dft1](/proyecto_1/images/dft.png)
+
+#### Señal Compleja: $ sen(2\pi5t) + sen(2\pi20t) + sen(2\pi60t) + ruido $
+![Image: dft1](/proyecto_1/images/dft2.png)
+
+#### Señal Voz Emulada: $ sen(2\pi120t) + sen(2\pi250t) + sen(2\pi400t) + ruido $
+
+![Image: dft1](/proyecto_1/images/dft3.png)
+
+Los tiempos de ejecución para cada uno fueron los siguientes:
+
+- Test 1:
+    - Duración: 0.051191091537475586
+    - Error obtenido: 1.9875884663898337e-12
+    - Energia de la señal: 63.5000
+
+- Test 2:
+    - Duración: 1.67474365234375
+    - Error obtenido: 8.915655588602046e-11
+    - Energia de la señal: 453.1395
+
+- Test 3:
+    - Duración: 6.542662143707275
+    - Error obtenido: 7.917881942456733e-11
+    - Energia de la señal: 234.6422
+
+### FFT - 27 y 28 de marzo del 2026
