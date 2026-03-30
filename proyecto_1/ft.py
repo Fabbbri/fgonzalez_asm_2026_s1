@@ -91,19 +91,6 @@ def fft(x):
 
 
 
-#IMPLEMENTAR
-def comprimir():
-    '''
-    Entrada: 
-    Salida: 
-    '''
-
-#IMPLEMENTAR
-def ifft():
-    '''
-    Entrada:
-    Salida: 
-    '''
 
 # TESTED
 def graficar_transformada(x, t, fs, metodo="dft"):
