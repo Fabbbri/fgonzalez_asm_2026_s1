@@ -42,7 +42,7 @@ X_VOZ = VOZ_EMULATE * (
 def _ejecutar_compresion(x, t, fs, nombre):
     print("-" * 60)
 
-    X_comprimida = ps.comprimir(x, energy_threshold=0.95)
+    X_comprimida = ps.compress(x, energy_threshold=0.95)
     N = len(x)
     res_rec = ps.reconstruct_signal(X_comprimida, N=N, use_custom_ifft=True)
 

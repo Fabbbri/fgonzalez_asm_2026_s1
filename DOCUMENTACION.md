@@ -388,3 +388,4 @@ Los tiempos de ejecución para cada uno fueron los siguientes:
     - Energia de la señal: 234.6422
 
 ### FFT - 27 y 28 de marzo del 2026
+
