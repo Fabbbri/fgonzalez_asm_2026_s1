@@ -36,3 +36,7 @@ git push origin --delete <nombre_rama>
 # Eliminar rama remota
 git branch -d <nombre_rama>
 ```
+
+## Uso de PlatformIO
+
+En VSC instala la extensión PlatformIO
