@@ -35,6 +35,11 @@ git push origin --delete <nombre_rama>
 
 # Eliminar rama remota
 git branch -d <nombre_rama>
+
+# Resetear una rama a su origins
+git clean -fd
+git reset --hard HEAD
+git pull
 ```
 
 ## Uso de PlatformIO
