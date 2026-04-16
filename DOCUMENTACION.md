@@ -270,7 +270,87 @@ function comprimir(x):
     return X_compr
 ```
 
-### 3.2 Reconstrucción
+### 3.3 Reconstrucción
+
+Una vez se tiene la lista comprimida `X_compr = [(k, X[k]), ...]`, se requiere reconstruir una señal aproximada en el dominio del tiempo.
+
+La idea es crear un espectro estimado `X_hat` de tamaño `N` inicializado en ceros, copiar en él los coeficientes conservados y aplicar la transformada inversa (`IFFT`).
+
+```
+Entrada: X_compr (lista de coeficientes), N
+Salida: x_rec[n] (señal reconstruida)
+```
+
+#### Pseudocódigo (reconstrucción)
+
+```python
+function reconstruir(X_compr, N):
+
+    # Crear espectro completo inicializado en 0
+    X_hat = [0+0j] * N
+
+    # Insertar coeficientes conservados
+    for (k, valor) in X_compr:
+        X_hat[k] = valor
+
+    # Reconstrucción en tiempo
+    x_rec = ifft(X_hat)
+
+    return x_rec
+```
+
+#### Nota de implementación (IFFT)
+
+En Python se puede implementar `ifft` usando la propiedad:
+
+```math
+\operatorname{IFFT}(X) = \frac{1}{N}\overline{\operatorname{FFT}(\overline{X})}
+```
+
+Esto permite calcular la inversa reutilizando la FFT.
+
+### 3.4 Métricas y visualización
+
+Para evaluar la aproximación reconstruida `x_rec[n]` con respecto a la señal original `x[n]`, se calculan:
+
+#### Error Cuadrático Medio (MSE)
+
+```math
+\operatorname{MSE} = \frac{1}{N}\sum_{n=0}^{N-1}(x[n] - x_{rec}[n])^2
+```
+
+#### Energía preservada
+
+Energía en el tiempo:
+
+```math
+E_x = \sum_{n=0}^{N-1}|x[n]|^2
+```
+
+Porcentaje de energía preservada (en tiempo):
+
+```math
+\eta = \frac{\sum|x_{rec}[n]|^2}{\sum|x[n]|^2}
+```
+
+Adicionalmente, durante la compresión se usa la energía espectral acumulada $\sum|X[k]|^2$ para determinar cuántos coeficientes se requieren para cumplir el umbral (por ejemplo, 95%).
+
+En cuanto a visualización, se grafica la señal original vs. la reconstruida para observar la similitud en el dominio del tiempo.
+
+### 3.5 Ejecución en Python
+
+El código de esta etapa se encuentra en `proyecto_1/signal-proc.py`.
+
+Ejecutar el demo (seleccionar `simple`, `compleja` o `voz`):
+
+```bash
+python proyecto_1/signal-proc.py
+```
+
+Dependencias:
+
+- `numpy`
+- `matplotlib`
 
 
 
@@ -308,3 +388,4 @@ Los tiempos de ejecución para cada uno fueron los siguientes:
     - Energia de la señal: 234.6422
 
 ### FFT - 27 y 28 de marzo del 2026
+

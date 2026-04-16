@@ -1,6 +1,7 @@
 # Archivo main para aspectos del punto 2 fft-experimental
 
 import ft as ft # implementación propia de Transformadas de Fourier
+import signal_proc as ps # procesamiento de señales (compresión/reconstrucción)
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -33,9 +34,36 @@ X_VOZ = VOZ_EMULATE * (
     0.3*np.sin(2*np.pi*400*T_VOZ)
 ) + 0.05*np.random.randn(FS_VOZ)
 
+
+# =====================
+# HELPER: Compresión + Reconstrucción + Reporte
+# =====================
+
+def _ejecutar_compresion(x, t, fs, nombre):
+    print("-" * 60)
+
+    X_comprimida = ps.compress(x, energy_threshold=0.95)
+    N = len(x)
+    res_rec = ps.reconstruct_signal(X_comprimida, N=N, use_custom_ifft=True)
+
+    mse_val = ps.mse(x, res_rec["x_rec"])
+    E_pres  = ps.energy_preserved(x, res_rec["x_rec"])
+
+    print(f"N = {N}")
+    print(f"Coeficientes retenidos    = {len(X_comprimida)} (de {N})")
+    print(f"Energía (tiempo) preservada  = {E_pres*100:.2f}%")
+    print(f"MSE = {mse_val:.6f}")
+    print("-" * 60)
+
+    ps.plot_original_vs_reconstructed(
+        x, res_rec["x_rec"], t=t,
+        title=f"Original vs reconstruida ({nombre}, 95% energía)"
+    )
+
 # =====================
 # MENÚ DE PRUEBAS
 # =====================
+
 def elegir_test():
 
     test = -1
@@ -56,6 +84,10 @@ def elegir_test():
         print("  7 - Comparar DFT vs FFT (Test Simple)")
         print("  8 - Comparar DFT vs FFT (Test Complejo)")
         print("  9 - Gráfico de Benchmark de Tiempos DFT vs FFT")
+        print("\nCompresión y Reconstrucción Espectral (FFT + IFFT):")
+        print(" 10 - Compresión/Reconstrucción (Señal Simple)")
+        print(" 11 - Compresión/Reconstrucción (Señal Compleja)")
+        print(" 12 - Compresión/Reconstrucción (Emulación de Voz)")
         print("\n  0 - Salir del simulador")
         print("="*50)
 
@@ -110,14 +142,28 @@ def elegir_test():
             print("="*60)
             ft.benchmark_tiempos([32, 64, 128, 256, 512, 1024])
 
+        elif test == 10:
+            print("\nTest 10 elegido: Compresión/Reconstrucción (Señal Simple)")
+            print("Para salir del test cierre la ventana de la gráfica")
+            _ejecutar_compresion(X_SIMPLE, T_SIMPLE, FS_SIMPLE, "simple")
+
+        elif test == 11:
+            print("\nTest 11 elegido: Compresión/Reconstrucción (Señal Compleja)")
+            print("Para salir del test cierre la ventana de la gráfica")
+            _ejecutar_compresion(X_COMPLEJO, T_COMPLEJO, FS_COMPLEJO, "compleja")
+
+        elif test == 12:
+            print("\nTest 12 elegido: Compresión/Reconstrucción (Emulación de Voz)")
+            print("Para salir del test cierre la ventana de la gráfica")
+            _ejecutar_compresion(X_VOZ, T_VOZ, FS_VOZ, "voz")
+
         else:
-            print("Error, debe digitar un número entre 0 y 9")
+            print("Error, debe digitar un número entre 0 y 12")
+
 
 # =====================
 # Función principal
 # =====================
 
 if __name__ == '__main__':
-
-
     elegir_test()
