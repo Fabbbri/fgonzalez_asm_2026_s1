@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include <arduinoFFT.h>
+#include <math.h>
 
 #define RXD2 16
 #define TXD2 17
@@ -10,10 +12,16 @@ const double   Fs           = 256.0;
 const uint16_t N            = 128;
 const uint32_t TIMEOUT_MS   = 100;  // timeout por byte
 
+// ─── Buffers IFFT (reconstrucción temporal) ──────────────────────
+double ifftReal[N];
+double ifftImag[N];
+ArduinoFFT<double> IFFT(ifftReal, ifftImag, N, Fs);
+
 // ─── Estructura idéntica al transmisor ───────────────────────────
 struct SpectralCoeff {
   uint16_t index;
   float    mag;
+  float    phase;
 };
 
 SpectralCoeff coeffs[64];  // máximo posible
@@ -22,6 +30,7 @@ SpectralCoeff coeffs[64];  // máximo posible
 bool     waitByte(uint8_t* out, uint32_t timeout_ms);
 uint8_t  calcChecksum(uint8_t* data, uint16_t len);
 void     processCoeffs(SpectralCoeff* c, uint8_t count);
+void     reconstructAndIFFT(SpectralCoeff* c, uint8_t count);
 
 // ─────────────────────────────────────────────────────────────────
 void setup() {
@@ -49,9 +58,10 @@ void loop() {
     return;
   }
 
-  // 3) Calcular tamaño del payload: K × 6 bytes + 1 checksum
-  uint16_t payloadLen = (uint16_t)K * 6 + 1;
-  uint8_t  raw[payloadLen];
+  // 3) Calcular tamaño del payload: K × 10 bytes + 1 checksum
+  //    (index 2 + mag 4 + phase 4)
+  uint16_t payloadLen = (uint16_t)K * 10 + 1;
+  static uint8_t raw[63 * 10 + 1];
 
   // Leer byte a byte con timeout
   for (uint16_t i = 0; i < payloadLen; i++) {
@@ -75,16 +85,19 @@ void loop() {
 
   // 5) Deserializar coeficientes
   for (uint8_t i = 0; i < K; i++) {
-    uint16_t offset    = i * 6;
-    coeffs[i].index    = ((uint16_t)raw[offset] << 8) | raw[offset + 1];
+    uint16_t offset = (uint16_t)i * 10;
+    coeffs[i].index = ((uint16_t)raw[offset] << 8) | raw[offset + 1];
 
-    // Reconstruir float desde 4 bytes (little-endian)
-    uint8_t fb[4] = { raw[offset+2], raw[offset+3], raw[offset+4], raw[offset+5] };
-    memcpy(&coeffs[i].mag, fb, 4);
+    // Reconstruir floats desde bytes (little-endian)
+    memcpy(&coeffs[i].mag, &raw[offset + 2], 4);
+    memcpy(&coeffs[i].phase, &raw[offset + 6], 4);
   }
 
   // 6) Procesar
   processCoeffs(coeffs, K);
+
+  // 7) Reconstruir señal (IFFT)
+  reconstructAndIFFT(coeffs, K);
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -110,7 +123,55 @@ void processCoeffs(SpectralCoeff* c, uint8_t count) {
   Serial.printf("─── Frame recibido: %u coeficientes ───\n", count);
   for (uint8_t i = 0; i < count; i++) {
     double freqHz = ((double)c[i].index * Fs) / N;
-    Serial.printf("  Bin %3u → %6.2f Hz | Mag: %.2f\n",
-                  c[i].index, freqHz, c[i].mag);
+    Serial.printf("  Bin %3u → %6.2f Hz | Mag: %.2f | Phase: %.4f rad\n",
+                  c[i].index, freqHz, c[i].mag, c[i].phase);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Reconstruye un espectro complejo (con simetría conjugada) a partir de los
+// bins recibidos y ejecuta la IFFT para obtener la señal temporal aproximada.
+void reconstructAndIFFT(SpectralCoeff* c, uint8_t count) {
+  // Limpiar espectro
+  for (uint16_t i = 0; i < N; i++) {
+    ifftReal[i] = 0.0;
+    ifftImag[i] = 0.0;
+  }
+
+  // Cargar bins positivos y reflejar al lado negativo (señal real)
+  for (uint8_t i = 0; i < count; i++) {
+    const uint16_t k = c[i].index;
+    if (k == 0 || k >= (N / 2)) {
+      continue; // DC y Nyquist no se envían
+    }
+
+    const double mag = (double)c[i].mag;
+    const double ph  = (double)c[i].phase;
+    const double re  = mag * cos(ph);
+    const double im  = mag * sin(ph);
+
+    ifftReal[k] = re;
+    ifftImag[k] = im;
+
+    const uint16_t k2 = (uint16_t)(N - k);
+    ifftReal[k2] = re;
+    ifftImag[k2] = -im;
+  }
+
+  // IFFT (la librería ya escala por N internamente)
+  IFFT.compute(FFT_REVERSE);
+
+  // Debug rápido
+  double mn = ifftReal[0];
+  double mx = ifftReal[0];
+  for (uint16_t i = 1; i < N; i++) {
+    if (ifftReal[i] < mn) mn = ifftReal[i];
+    if (ifftReal[i] > mx) mx = ifftReal[i];
+  }
+
+  Serial.printf("IFFT: min=%.2f max=%.2f | first8:", mn, mx);
+  for (uint8_t i = 0; i < 8; i++) {
+    Serial.printf(" %.2f", ifftReal[i]);
+  }
+  Serial.println();
 }

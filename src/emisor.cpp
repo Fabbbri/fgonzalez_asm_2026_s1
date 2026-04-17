@@ -8,9 +8,10 @@ const int      adcPin            = 34;
 const uint16_t SAMPLES           = 128;
 const double   FREQ              = 2.0;
 const double   Fs                = FREQ * SAMPLES;   // 256 Hz
-const double   ENERGY_THRESHOLD  = 0.90;             // conservar 90% energía
+const double   ENERGY_THRESHOLD  = 0.95;             // conservar 95% energía
 const uint8_t  MAX_BINS          = 64;               // SAMPLES/2
 const uint8_t  FRAME_HEADER      = 0xAA;
+double vPhase[SAMPLES / 2];
 
 // ─── Buffers FFT ──────────────────────────────────────────────────
 double vReal[SAMPLES];
@@ -19,8 +20,9 @@ ArduinoFFT<double> FFT(vReal, vImag, SAMPLES, Fs);
 
 // ─── Estructura de coeficiente espectral ──────────────────────────
 struct SpectralCoeff {
-  uint16_t index;   // número de bin
-  float    mag;     // magnitud
+  uint16_t index;
+  float    mag;
+  float    phase;  
 };
 
 SpectralCoeff selected[MAX_BINS];  // peor caso: todos los bins
@@ -86,8 +88,13 @@ void computeFFT() {
   FFT.dcRemoval();
   FFT.windowing(FFT_WIN_TYP_HAMMING, FFT_FORWARD);
   FFT.compute(FFT_FORWARD);
+
+  // Guardar fase ANTES de que complexToMagnitude destruya vImag[]
+  for (uint16_t i = 0; i < SAMPLES / 2; i++) {
+    vPhase[i] = (float)atan2(vImag[i], vReal[i]);
+  }
+
   FFT.complexToMagnitude();
-  // vReal[0..N/2-1] ahora contiene magnitudes
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -98,10 +105,11 @@ uint8_t selectByEnergy(double threshold) {
   const uint8_t N2 = SAMPLES / 2;
 
   // --- Copiar bins 1..N/2-1 a selected[] (ignoramos DC = bin 0)
-  for (uint8_t i = 0; i < N2 - 1; i++) {
+    for (uint8_t i = 0; i < N2 - 1; i++) {
     selected[i].index = i + 1;
     selected[i].mag   = (float)vReal[i + 1];
-  }
+    selected[i].phase = vPhase[i + 1];  // ← agregar
+    }
   uint8_t total = N2 - 1;
 
   // --- Calcular energía total (suma de magnitudes al cuadrado)
@@ -133,12 +141,10 @@ uint8_t selectByEnergy(double threshold) {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// Formato del frame:
-//  [0xAA][K][index_hi][index_lo][mag b3][mag b2][mag b1][mag b0] x K [checksum]
+// El frame ahora es: [0xAA][K][index(2)][mag(4)][phase(4)] x K [checksum]
+// Por coeficiente: 10 bytes en vez de 6
 void transmitFrame(SpectralCoeff* coeffs, uint8_t count) {
-  // Construir buffer
-  // max size: 1 header + 1 count + 6*count + 1 checksum
-  const uint16_t maxBuf = 2 + 6 * MAX_BINS + 1;
+  const uint16_t maxBuf = 2 + 10 * MAX_BINS + 1;  // 6→10
   uint8_t buf[maxBuf];
   uint16_t idx = 0;
 
@@ -146,20 +152,22 @@ void transmitFrame(SpectralCoeff* coeffs, uint8_t count) {
   buf[idx++] = count;
 
   for (uint8_t i = 0; i < count; i++) {
-    // bin index (2 bytes, big-endian)
+    // index (2 bytes big-endian)
     buf[idx++] = (uint8_t)(coeffs[i].index >> 8);
     buf[idx++] = (uint8_t)(coeffs[i].index & 0xFF);
 
-    // magnitud (float 4 bytes, little-endian)
-    uint8_t* fb = (uint8_t*)&coeffs[i].mag;
-    buf[idx++] = fb[0];
-    buf[idx++] = fb[1];
-    buf[idx++] = fb[2];
-    buf[idx++] = fb[3];
+    // magnitud (float 4 bytes little-endian)
+    uint8_t* fm = (uint8_t*)&coeffs[i].mag;
+    buf[idx++] = fm[0]; buf[idx++] = fm[1];
+    buf[idx++] = fm[2]; buf[idx++] = fm[3];
+
+    // fase (float 4 bytes little-endian)
+    uint8_t* fp = (uint8_t*)&coeffs[i].phase;
+    buf[idx++] = fp[0]; buf[idx++] = fp[1];
+    buf[idx++] = fp[2]; buf[idx++] = fp[3];
   }
 
   buf[idx++] = calcChecksum(buf, idx);
-
   Serial2.write(buf, idx);
 }
 
@@ -177,7 +185,7 @@ void printSpectralSummary(SpectralCoeff* coeffs, uint8_t count) {
                 count, SAMPLES / 2 - 1);
   for (uint8_t i = 0; i < count; i++) {
     double freqHz = ((double)coeffs[i].index * Fs) / SAMPLES;
-    Serial.printf("  Bin %3u → %6.2f Hz | Mag: %.2f\n",
-                  coeffs[i].index, freqHz, coeffs[i].mag);
+    Serial.printf("  Bin %3u → %6.2f Hz | Mag: %.2f | Phase: %.4f rad\n",
+                  coeffs[i].index, freqHz, coeffs[i].mag, coeffs[i].phase);
   }
 }
