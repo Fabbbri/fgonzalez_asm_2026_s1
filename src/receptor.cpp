@@ -5,103 +5,106 @@
 #define RXD2 16
 #define TXD2 17
 
+// ================= CONFIG =================
+const uint8_t  FRAME_HEADER = 0xAA;
+const double   Fs           = 8000.0;
+const uint16_t N            = 128;
+const uint32_t TIMEOUT_MS   = 100;
+const uint32_t UART_BAUD    = 460800;
+const int      dacPin       = 25;
+
 HardwareSerial MySerial(2);
 
-const uint8_t  FRAME_HEADER = 0xAA;
-const double   Fs           = 256.0;
-const uint16_t N            = 128;
-const uint32_t TIMEOUT_MS   = 100;  // timeout por byte
+// =========================================================
+//  DOBLE BUFFER + SINCRONIZACIÓN ENTRE NÚCLEOS
+//  Core 1 (loop): recibe UART -> IFFT -> llena buffer inactivo
+//  Core 0 (task): reproduce buffer activo continuamente
+//
+//  Mientras Core 0 reproduce el buffer A, Core 1 llena B.
+//  Cuando B está listo, se hace swap y se repite.
+//  Arregla clicks
+// =========================================================
+static uint8_t  bufA[N];
+static uint8_t  bufB[N];
+static uint8_t* playBuf = bufA;   // Core 0 lee de acá
+static uint8_t* fillBuf = bufB;   // Core 1 escribe acá
+static volatile bool bufferReady = false;   // Core 1 avisa que fillBuf está listo
+static volatile bool swapRequest = false;   // Core 0 pide swap cuando termina el frame
 
-// ─── Buffers IFFT (reconstrucción temporal) ──────────────────────
-double ifftReal[N];
-double ifftImag[N];
+// Proteger el swap de punteros
+static SemaphoreHandle_t swapMutex;
+
+// =========================================================
+//  ESTADO IFFT
+// =========================================================
+static double ifftReal[N];
+static double ifftImag[N];
 ArduinoFFT<double> IFFT(ifftReal, ifftImag, N, Fs);
 
-// ─── Estructura idéntica al transmisor ───────────────────────────
 struct SpectralCoeff {
   uint16_t index;
   float    mag;
   float    phase;
 };
+static SpectralCoeff coeffs[64];
 
-SpectralCoeff coeffs[64];  // máximo posible
+// =========================================================
+//  TAREA DE REPRODUCCIÓN — Core 0
+//  Reproduce playBuf en loop. Al terminar cada frame de N
+//  muestras, si bufferReady==true hace el swap de punteros.
+// =========================================================
+static uint8_t lastSample = 128;
+static const uint8_t FADE = 32;  
 
-// ─── Prototipos ──────────────────────────────────────────────────
-bool     waitByte(uint8_t* out, uint32_t timeout_ms);
-uint8_t  calcChecksum(uint8_t* data, uint16_t len);
-void     processCoeffs(SpectralCoeff* c, uint8_t count);
-void     reconstructAndIFFT(SpectralCoeff* c, uint8_t count);
+void taskPlay(void* pvParameters) {
+  const uint32_t period_us = (uint32_t)llround(1e6 / Fs);
 
-// ─────────────────────────────────────────────────────────────────
-void setup() {
-  Serial.begin(115200);
-  MySerial.begin(115200, SERIAL_8N1, RXD2, TXD2);
-  Serial.println("=== ESP32 Receptor listo ===");
-}
-
-// ─────────────────────────────────────────────────────────────────
-void loop() {
-  if (!MySerial.available()) return;
-
-  // 1) Buscar header
-  if (MySerial.read() != FRAME_HEADER) return;
-
-  // 2) Leer K con timeout
-  uint8_t K = 0;
-  if (!waitByte(&K, TIMEOUT_MS)) {
-    Serial.println("[ERR] Timeout leyendo K");
-    return;
+  // Esperar a que llegue el primer frame
+  while (!bufferReady) {
+    dacWrite(dacPin, 128);
+    delayMicroseconds(period_us);
   }
 
-  if (K == 0 || K > 63) {
-    Serial.printf("[ERR] K inválido: %u\n", K);
-    return;
-  }
-
-  // 3) Calcular tamaño del payload: K × 10 bytes + 1 checksum
-  //    (index 2 + mag 4 + phase 4)
-  uint16_t payloadLen = (uint16_t)K * 10 + 1;
-  static uint8_t raw[63 * 10 + 1];
-
-  // Leer byte a byte con timeout
-  for (uint16_t i = 0; i < payloadLen; i++) {
-    if (!waitByte(&raw[i], TIMEOUT_MS)) {
-      Serial.printf("[ERR] Timeout en byte %u\n", i);
-      return;
+  for (;;) {
+    // Hacer swap si Core 1 preparó un nuevo buffer
+    if (bufferReady) {
+      if (xSemaphoreTake(swapMutex, 0) == pdTRUE) {
+        uint8_t* tmp = playBuf;
+        playBuf     = fillBuf;
+        fillBuf     = tmp;
+        bufferReady = false;
+        xSemaphoreGive(swapMutex);
+      }
     }
+
+    // Reproducir el frame completo sample a sample
+    uint32_t t = micros();
+    for (uint16_t i = 0; i < N; i++) {
+      uint8_t sample = playBuf[i];
+
+      // Crossfader
+      if (i < FADE) {
+        float alpha = (float)i / (float)FADE;
+        sample = (uint8_t)(lastSample * (1.0f - alpha) + playBuf[i] * alpha);
+      }
+
+      dacWrite(dacPin, sample);
+
+      uint32_t elapsed = (uint32_t)(micros() - t);
+      if (elapsed >= period_us) {
+        t = micros();
+      } else {
+        while ((uint32_t)(micros() - t) < period_us) {}
+        t += period_us;
+      }
+    }
+    lastSample = playBuf[N - 1];
   }
-
-  // 4) Verificar checksum
-  // El checksum se calculó sobre [header, K, payload_sin_checksum]
-  uint8_t headerBuf[2] = { FRAME_HEADER, K };
-  uint8_t cs = calcChecksum(headerBuf, 2);
-  cs ^= calcChecksum(raw, payloadLen - 1);  // excluye el byte de checksum
-
-  if (cs != raw[payloadLen - 1]) {
-    Serial.printf("[ERR] Checksum inválido. Esperado: 0x%02X | Recibido: 0x%02X\n",
-                  cs, raw[payloadLen - 1]);
-    return;
-  }
-
-  // 5) Deserializar coeficientes
-  for (uint8_t i = 0; i < K; i++) {
-    uint16_t offset = (uint16_t)i * 10;
-    coeffs[i].index = ((uint16_t)raw[offset] << 8) | raw[offset + 1];
-
-    // Reconstruir floats desde bytes (little-endian)
-    memcpy(&coeffs[i].mag, &raw[offset + 2], 4);
-    memcpy(&coeffs[i].phase, &raw[offset + 6], 4);
-  }
-
-  // 6) Procesar
-  processCoeffs(coeffs, K);
-
-  // 7) Reconstruir señal (IFFT)
-  reconstructAndIFFT(coeffs, K);
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Espera un byte con timeout. Retorna false si se agota el tiempo.
+// =========================================================
+//  FUNCIONES DE RECEPCIÓN Y PROCESAMIENTO
+// =========================================================
 bool waitByte(uint8_t* out, uint32_t timeout_ms) {
   uint32_t start = millis();
   while (!MySerial.available()) {
@@ -111,67 +114,162 @@ bool waitByte(uint8_t* out, uint32_t timeout_ms) {
   return true;
 }
 
-// ─────────────────────────────────────────────────────────────────
 uint8_t calcChecksum(uint8_t* data, uint16_t len) {
   uint8_t cs = 0;
   for (uint16_t i = 0; i < len; i++) cs ^= data[i];
   return cs;
 }
 
-// ─────────────────────────────────────────────────────────────────
-void processCoeffs(SpectralCoeff* c, uint8_t count) {
-  Serial.printf("─── Frame recibido: %u coeficientes ───\n", count);
-  for (uint8_t i = 0; i < count; i++) {
-    double freqHz = ((double)c[i].index * Fs) / N;
-    Serial.printf("  Bin %3u → %6.2f Hz | Mag: %.2f | Phase: %.4f rad\n",
-                  c[i].index, freqHz, c[i].mag, c[i].phase);
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────
-// Reconstruye un espectro complejo (con simetría conjugada) a partir de los
-// bins recibidos y ejecuta la IFFT para obtener la señal temporal aproximada.
 void reconstructAndIFFT(SpectralCoeff* c, uint8_t count) {
-  // Limpiar espectro
   for (uint16_t i = 0; i < N; i++) {
     ifftReal[i] = 0.0;
     ifftImag[i] = 0.0;
   }
 
-  // Cargar bins positivos y reflejar al lado negativo (señal real)
   for (uint8_t i = 0; i < count; i++) {
     const uint16_t k = c[i].index;
-    if (k == 0 || k >= (N / 2)) {
-      continue; // DC y Nyquist no se envían
-    }
+    if (k == 0 || k >= (N / 2)) continue;
 
     const double mag = (double)c[i].mag;
     const double ph  = (double)c[i].phase;
-    const double re  = mag * cos(ph);
-    const double im  = mag * sin(ph);
 
-    ifftReal[k] = re;
-    ifftImag[k] = im;
+    ifftReal[k] = mag * cos(ph);
+    ifftImag[k] = mag * sin(ph);
 
     const uint16_t k2 = (uint16_t)(N - k);
-    ifftReal[k2] = re;
-    ifftImag[k2] = -im;
+    ifftReal[k2] =  ifftReal[k];
+    ifftImag[k2] = -ifftImag[k];
   }
 
-  // IFFT (la librería ya escala por N internamente)
   IFFT.compute(FFT_REVERSE);
 
-  // Debug rápido
-  double mn = ifftReal[0];
-  double mx = ifftReal[0];
-  for (uint16_t i = 1; i < N; i++) {
-    if (ifftReal[i] < mn) mn = ifftReal[i];
-    if (ifftReal[i] > mx) mx = ifftReal[i];
+  for (uint16_t i = 0; i < N; i++) {
+    ifftReal[i] /= (double)N;
+  }
+}
+
+// Escribe el resultado de la IFFT en el fillBuf
+void prepareFillBuffer() {
+  double maxAbs = 1.0;
+  for (uint16_t i = 0; i < N; i++) {
+    double a = fabs(ifftReal[i]);
+    if (a > maxAbs) maxAbs = a;
   }
 
-  Serial.printf("IFFT: min=%.2f max=%.2f | first8:", mn, mx);
-  for (uint8_t i = 0; i < 8; i++) {
-    Serial.printf(" %.2f", ifftReal[i]);
+  const double gain = 120.0 / maxAbs;
+
+  // Escribir en fillBuf 
+  for (uint16_t i = 0; i < N; i++) {
+    int s = (int)lround(128.0 + ifftReal[i] * gain);
+    if (s < 0)   s = 0;
+    if (s > 255) s = 255;
+    fillBuf[i] = (uint8_t)s;
   }
-  Serial.println();
+}
+
+void processCoeffs(SpectralCoeff* c, uint8_t count) {
+  static uint32_t lastPrint = 0;
+  if (millis() - lastPrint < 500) return;
+  lastPrint = millis();
+
+  Serial.printf("Frame recibido: %u coeficientes\n", count);
+  for (uint8_t i = 0; i < count; i++) {
+    double freqHz = ((double)c[i].index * Fs) / N;
+    Serial.printf("  Bin %2u -> %6.1f Hz | Mag %.2f | Phase %.3f\n",
+                  c[i].index, freqHz, c[i].mag, c[i].phase);
+  }
+}
+
+// =========================================================
+//  SETUP — lanza la tarea de reproducción en Core 0
+// =========================================================
+void setup() {
+  Serial.begin(115200);
+  MySerial.begin(UART_BAUD, SERIAL_8N1, RXD2, TXD2);
+  dacWrite(dacPin, 128);
+
+  // Inicializar buffers con silencio
+  memset(bufA, 128, N);
+  memset(bufB, 128, N);
+
+  swapMutex = xSemaphoreCreateMutex();
+
+  // Lanzar tarea de audio en Core 0
+  // Core 1 es el que corre loop() por defecto
+  xTaskCreatePinnedToCore(
+    taskPlay,    // función
+    "taskPlay",  // nombre
+    4096,        // stack (bytes)
+    NULL,        // parámetro
+    24,          // prioridad (alta para no perder muestras)
+    NULL,        // handle
+    0            // Core 0
+  );
+
+  Serial.println("=== RECEPTOR IFFT + DAC listo (dual core) ===");
+  Serial.printf("Fs=%.1f Hz | N=%u | UART=%lu\n", Fs, N, UART_BAUD);
+}
+
+// =========================================================
+//  LOOP — Core 1: recepción y procesamiento
+// =========================================================
+void loop() {
+  if (!MySerial.available()) return;
+
+  if (MySerial.read() != FRAME_HEADER) return;
+
+  uint8_t K = 0;
+  if (!waitByte(&K, TIMEOUT_MS)) {
+    Serial.println("[ERR] Timeout leyendo K");
+    return;
+  }
+
+  if (K == 0 || K > 63) {
+    Serial.printf("[ERR] K invalido: %u\n", K);
+    return;
+  }
+
+  uint16_t payloadLen = (uint16_t)K * 10 + 1;
+  static uint8_t raw[63 * 10 + 1];
+
+  for (uint16_t i = 0; i < payloadLen; i++) {
+    if (!waitByte(&raw[i], TIMEOUT_MS)) {
+      Serial.printf("[ERR] Timeout en byte %u\n", i);
+      return;
+    }
+  }
+
+  // Verificar checksum
+  uint8_t headerBuf[2] = { FRAME_HEADER, K };
+  uint8_t cs = calcChecksum(headerBuf, 2);
+  cs ^= calcChecksum(raw, payloadLen - 1);
+
+  if (cs != raw[payloadLen - 1]) {
+    Serial.printf("[ERR] Checksum invalido. Esperado 0x%02X, recibido 0x%02X\n",
+                  cs, raw[payloadLen - 1]);
+    return;
+  }
+
+  // Deserializar
+  for (uint8_t i = 0; i < K; i++) {
+    uint16_t offset = (uint16_t)i * 10;
+    coeffs[i].index = ((uint16_t)raw[offset] << 8) | raw[offset + 1];
+    memcpy(&coeffs[i].mag,   &raw[offset + 2], 4);
+    memcpy(&coeffs[i].phase, &raw[offset + 6], 4);
+  }
+
+  processCoeffs(coeffs, K);
+  reconstructAndIFFT(coeffs, K);
+
+  // Esperar a que Core 0 haya consumido el buffer antes de escribir
+  // (bufferReady == false significa que el swap ya ocurrió)
+  uint32_t waitStart = millis();
+  while (bufferReady && (millis() - waitStart < 50)) {
+    vTaskDelay(1);
+  }
+
+  prepareFillBuffer();
+
+  // Avisar a Core 0 que el nuevo buffer está listo
+  bufferReady = true;
 }
