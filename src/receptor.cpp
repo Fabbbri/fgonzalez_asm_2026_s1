@@ -229,8 +229,10 @@ void loop() {
     return;
   }
 
-  uint16_t payloadLen = (uint16_t)K * 10 + 1;
-  static uint8_t raw[63 * 10 + 1];
+  // Frame v2:
+  // totalEnergy (4) + K*(10) + origSamples (N) + checksum (1)
+  uint16_t payloadLen = 4 + (uint16_t)K * 10 + N + 1;
+  static uint8_t raw[4 + 63 * 10 + N + 1];
 
   for (uint16_t i = 0; i < payloadLen; i++) {
     if (!waitByte(&raw[i], TIMEOUT_MS)) {
@@ -252,7 +254,7 @@ void loop() {
 
   // Deserializar
   for (uint8_t i = 0; i < K; i++) {
-    uint16_t offset = (uint16_t)i * 10;
+    uint16_t offset = 4 + (uint16_t)i * 10; // saltar totalEnergy
     coeffs[i].index = ((uint16_t)raw[offset] << 8) | raw[offset + 1];
     memcpy(&coeffs[i].mag,   &raw[offset + 2], 4);
     memcpy(&coeffs[i].phase, &raw[offset + 6], 4);
