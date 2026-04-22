@@ -6,7 +6,7 @@
 // Descomente la que quiere usar, solo una a la vez
 
 #define SIGNAL_SINE       // Tono senoidal puro (500 Hz)
-// #define SIGNAL_SQUARE  // Onda cuadrada (500 Hz)
+//#define SIGNAL_SQUARE  // Onda cuadrada (500 Hz)
 // #define SIGNAL_COMPOSITE  // Señal compuesta (500 Hz)
 // Nota: pines de diagnóstico (Pico) se definen más abajo.
 // =====================================================
@@ -56,6 +56,11 @@ double vImag[SAMPLES];  // Parte Imaginarioas
 double vPhase[SAMPLES / 2]; //Fase de cada prueba
 ArduinoFFT<double> FFT(vReal, vImag, SAMPLES, Fs); 
 
+// Referencia enviada al receptor para métricas (0..255, centrado en 128)
+// Se calcula desde las mismas muestras usadas para la FFT (ADC) luego de:
+// dcRemoval + ventana Hamming + ganancia (similar al receptor).
+static uint8_t refU8[SAMPLES];
+
 // Almacena coeficientes espectrales
 struct SpectralCoeff {
   uint16_t index;
@@ -77,6 +82,12 @@ uint8_t  selectByEnergy(double threshold);
 void     transmitFrame(SpectralCoeff* coeffs, uint8_t count, float totalEnergy);
 uint8_t  calcChecksum(uint8_t* data, uint16_t len);
 void     printSpectralSummary(SpectralCoeff* coeffs, uint8_t count);
+
+static inline uint8_t clampU8(int x) {
+  if (x < 0) return 0;
+  if (x > 255) return 255;
+  return (uint8_t)x;
+}
 
 // Tabla discreta de una señal periodica
 void buildSignalTable() {
@@ -209,6 +220,20 @@ void loop() {
 void computeFFT() {
   FFT.dcRemoval();
   FFT.windowing(FFT_WIN_TYP_HAMMING, FFT_FORWARD);
+
+  // Construir referencia coherente con lo que se reconstruye (señal ya ventaneada)
+  // Escalamos a 0..255 con centro 128, usando un gain por bloque.
+  double maxAbs = 1.0;
+  for (uint16_t i = 0; i < SAMPLES; i++) {
+    double a = fabs(vReal[i]);
+    if (a > maxAbs) maxAbs = a;
+  }
+  const double gain = 120.0 / maxAbs;
+  for (uint16_t i = 0; i < SAMPLES; i++) {
+    int s = (int)lround(128.0 + vReal[i] * gain);
+    refU8[i] = clampU8(s);
+  }
+
   FFT.compute(FFT_FORWARD);
 
   for (uint16_t i = 0; i < SAMPLES / 2; i++) {
@@ -296,9 +321,9 @@ void transmitFrame(SpectralCoeff* coeffs, uint8_t count, float totalEnergy) {
     buf[idx++] = fp[2]; buf[idx++] = fp[3];
   }
 
-  // Referencia: señal original (tabla de la señal generada)
+  // Referencia: señal coherente con la FFT (ADC + dcRemoval + Hamming + escalado)
   for (uint16_t i = 0; i < SAMPLES; i++) {
-    buf[idx++] = signalTable[i];
+    buf[idx++] = refU8[i];
   }
 
   buf[idx++] = calcChecksum(buf, idx);

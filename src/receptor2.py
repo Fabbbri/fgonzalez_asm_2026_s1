@@ -21,6 +21,10 @@ FRAME_HEADER = 0xAA
 UART_BAUD = 115200
 N = 128
 
+# Debug opcional: imprime algunas muestras para comparar reconstrucción
+DEBUG_SAMPLES = True
+DEBUG_SAMPLES_N = 3
+
 UART_ID = 1
 
 # UART1 
@@ -146,17 +150,26 @@ class Pcf8574Lcd:
 
 
 def reconstruct_u8(coeffs):
-    two_over_n = 2.0 / float(N)
-    w = (2.0 * math.pi) / float(N)
+    # Reconstrucción equivalente al receptor 1 (ESP32):
+    # 1) Armar espectro complejo X[k] desde (mag, phase)
+    # 2) Aplicar simetría hermítica: X[N-k] = conj(X[k])
+    # 3) IFFT y escalamiento a u8 (0..255) centrado en 128
 
-    x = [0.0] * N
-    for n in range(N):
-        acc = 0.0
-        for (k, mag, ph) in coeffs:
-            if k <= 0 or k >= (N // 2):
-                continue
-            acc += mag * math.cos(w * k * n + ph)
-        x[n] = two_over_n * acc
+    X = [0j] * N
+    for (k, mag, ph) in coeffs:
+        if k <= 0 or k >= (N // 2):
+            continue
+
+        re = float(mag) * math.cos(float(ph))
+        im = float(mag) * math.sin(float(ph))
+        X[int(k)] = complex(re, im)
+
+        k2 = int(N - int(k))
+        X[k2] = complex(re, -im)
+
+    x_cplx = ifft(X)
+    # Idealmente real (la parte imag es numérica)
+    x = [float(v.real) for v in x_cplx]
 
     max_abs = 1e-9
     for n in range(N):
@@ -170,6 +183,94 @@ def reconstruct_u8(coeffs):
         s = int(round(128.0 + x[n] * gain))
         out[n] = clamp_u8(s)
     return out
+
+
+def _is_power_of_two(n):
+    return n > 0 and (n & (n - 1)) == 0
+
+
+def _bit_reverse(x, bits):
+    y = 0
+    for _ in range(bits):
+        y = (y << 1) | (x & 1)
+        x >>= 1
+    return y
+
+
+_twiddles = None
+
+
+def _get_twiddles(n):
+    # Precalcula twiddles para FFT de longitud n (potencia de 2)
+    # tw[size][j] = exp(-j*2*pi*j/size)
+    global _twiddles
+    if _twiddles is not None and _twiddles.get("n") == n:
+        return _twiddles
+
+    if not _is_power_of_two(n):
+        raise ValueError("FFT/IFFT requiere N potencia de 2")
+
+    levels = 0
+    t = n
+    while t > 1:
+        levels += 1
+        t >>= 1
+
+    tw = {}
+    size = 2
+    while size <= n:
+        half = size >> 1
+        theta = -2.0 * math.pi / float(size)
+        wlist = [0j] * half
+        for j in range(half):
+            ang = theta * float(j)
+            wlist[j] = complex(math.cos(ang), math.sin(ang))
+        tw[size] = wlist
+        size <<= 1
+
+    rev = [0] * n
+    for i in range(n):
+        rev[i] = _bit_reverse(i, levels)
+
+    _twiddles = {"n": n, "rev": rev, "tw": tw}
+    return _twiddles
+
+
+def fft(x):
+    # FFT radix-2 iterativa in-place sobre copia
+    n = len(x)
+    cfg = _get_twiddles(n)
+    a = list(x)
+
+    # Permutación bit-reversal
+    rev = cfg["rev"]
+    for i in range(n):
+        j = rev[i]
+        if j > i:
+            a[i], a[j] = a[j], a[i]
+
+    size = 2
+    tw = cfg["tw"]
+    while size <= n:
+        half = size >> 1
+        wlist = tw[size]
+        for start in range(0, n, size):
+            for j in range(half):
+                u = a[start + j]
+                v = wlist[j] * a[start + j + half]
+                a[start + j] = u + v
+                a[start + j + half] = u - v
+        size <<= 1
+    return a
+
+
+def ifft(X):
+    # IFFT usando la propiedad: ifft(X) = conj(fft(conj(X))) / N
+    n = len(X)
+    Xc = [complex(v.real, -v.imag) for v in X]
+    y = fft(Xc)
+    inv_n = 1.0 / float(n)
+    return [complex(v.real, -v.imag) * inv_n for v in y]
 
 
 def compute_metrics(orig_u8, recon_u8, total_energy, coeffs):
@@ -333,6 +434,13 @@ def main():
                 snr_txt = "{:.1f}".format(snr_db)
 
             print("K={}, MSE={:.2f}, E={:.1f}%, SNR={} dB".format(K, mse, e_ratio * 100.0, snr_txt))
+
+            if DEBUG_SAMPLES:
+                m = DEBUG_SAMPLES_N
+                # orig_u8 es un memoryview; convertir a int para imprimir
+                o = [int(orig_u8[i]) for i in range(m)]
+                r = [int(recon_u8[i]) for i in range(m)]
+                print("orig[0:{}]={}  recon[0:{}]={}".format(m - 1, o, m - 1, r))
 
             if lcd:
                 # LCD 16x2: mostrar fijo las 3 métricas solicitadas.

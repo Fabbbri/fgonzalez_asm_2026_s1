@@ -185,6 +185,12 @@ void processCoeffs(SpectralCoeff* c, uint8_t count) {
 // =========================================================
 void setup() {
   Serial.begin(115200);
+
+  // El task de audio (Core 0) hace espera activa a microsegundos para mantener Fs.
+  // Eso puede impedir que corra IDLE0 y disparar el Task Watchdog.
+  // Solución simple: desactivar WDT del Core 0.
+  disableCore0WDT();
+
   MySerial.begin(UART_BAUD, SERIAL_8N1, RXD2, TXD2);
   dacWrite(dacPin, 128);
 
