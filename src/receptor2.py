@@ -22,7 +22,7 @@ UART_BAUD = 115200
 N = 128
 
 # Debug opcional: imprime algunas muestras para comparar reconstrucción
-DEBUG_SAMPLES = True
+DEBUG_SAMPLES = False
 DEBUG_SAMPLES_N = 3
 
 UART_ID = 1

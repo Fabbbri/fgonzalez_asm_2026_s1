@@ -5,24 +5,36 @@
 // ================= SELECTOR DE SEÑAL =================
 // Descomente la que quiere usar, solo una a la vez
 
-#define SIGNAL_SINE       // Tono senoidal puro (500 Hz)
-//#define SIGNAL_SQUARE  // Onda cuadrada (500 Hz)
-// #define SIGNAL_COMPOSITE  // Señal compuesta (500 Hz)
+// Señales portadas desde `proyecto_1/simulation.py` (simple/compuesta/voz)
+// Nota: acá se generan con el esquema actual del sistema (N=128, Fs=8000)
+// para NO modificar el frame ni el `receptor.cpp`.
+#define SIGNAL_PY_SIMPLE
+// #define SIGNAL_PY_COMPOSITE
+// #define SIGNAL_PY_VOICE
+
+// Señales legacy (previas):
+// #define SIGNAL_SINE
+// #define SIGNAL_SQUARE
+// #define SIGNAL_COMPOSITE
+
 // Nota: pines de diagnóstico (Pico) se definen más abajo.
 // =====================================================
 
 // ================= CONFIG =================
 const int      dacPin            = 25;
 const int      adcPin            = 34;
-const uint16_t SAMPLES           = 128;
+constexpr uint16_t SAMPLES       = 128;
 const double   Fs                = 8000.0;
-const double   FUND_HZ           = 500.0;   // frecuencia base para todas las señales
+const double   FUND_HZ           = 500.0;   // frecuencia base para señales legacy
 const double   ENERGY_THRESHOLD  = 0.95;
 const uint8_t  MAX_BINS          = 64;
 const uint8_t  FRAME_HEADER      = 0xAA;
 const uint32_t UART_BAUD_R1      = 460800;
 const uint32_t UART_BAUD_R2      = 115200;
 const float    HAMMING_COMPENSATION = 1.0f / 0.54f;
+
+// Escala pico para mapear señal float -> DAC (0..255, centro 128)
+constexpr float DAC_PEAK = 120.0f;
 
 // DIAGNÓSTICO DE CABLEADO ESP32->PICO
 // 0: modo normal (FFT + frames)
@@ -89,43 +101,129 @@ static inline uint8_t clampU8(int x) {
   return (uint8_t)x;
 }
 
+// ================= RNG (ruido gaussiano estilo np.random.randn) =================
+static uint32_t rngState = 0xC0FFEE01u;
+
+static inline uint32_t xorshift32() {
+  // xorshift32 clásico (rápido, suficiente para generar ruido en test)
+  uint32_t x = rngState;
+  x ^= x << 13;
+  x ^= x >> 17;
+  x ^= x << 5;
+  rngState = x;
+  return x;
+}
+
+static inline float randUniform01() {
+  // (0,1) abierto en 0 para evitar log(0)
+  uint32_t r = xorshift32();
+  // 24 bits de mantisa
+  float u = ((r >> 8) + 1.0f) * (1.0f / 16777217.0f);
+  return u;
+}
+
+static inline float randn() {
+  // Box-Muller: N(0,1)
+  const float u1 = randUniform01();
+  const float u2 = randUniform01();
+  const float r = sqrtf(-2.0f * logf(u1));
+  const float theta = 2.0f * (float)PI * u2;
+  return r * cosf(theta);
+}
+
 // Tabla discreta de una señal periodica
 void buildSignalTable() {
-  for (int i = 0; i < SAMPLES; i++) {
-    double angle = 2.0 * PI * FUND_HZ * i / Fs;
-    double wave  = 0.0;
+  float raw[SAMPLES];
 
-#if defined(SIGNAL_SINE)
-    // Senoide pura 
-    wave = 120.0 * sin(angle);
+  // Fs usados en `proyecto_1/simulation.py` (referencias para mapear frecuencias)
+  constexpr float FS_PY_SIMPLE    = 128.0f;
+  constexpr float FS_PY_COMPOSITE = 1024.0f;
+  constexpr float FS_PY_VOICE     = 2048.0f;
+
+  for (uint16_t i = 0; i < SAMPLES; i++) {
+    const float t = (float)i / (float)Fs;
+    const float t01 = (SAMPLES > 1) ? ((float)i / (float)(SAMPLES - 1)) : 0.0f;
+    float x = 0.0f;
+
+#if defined(SIGNAL_PY_SIMPLE)
+    // X_SIMPLE = sin(2*pi*5*t)
+  // En Python: FS_SIMPLE=128. Para que no quede casi DC con Fs=8000 y N=128,
+  // mapeamos f_py -> f_hw: f_hw = f_py * Fs / FS_PY_SIMPLE.
+  x = sinf(2.0f * (float)PI * (5.0f * (float)Fs / FS_PY_SIMPLE) * t);
+
+#elif defined(SIGNAL_PY_COMPOSITE)
+    // X_COMPLEJO = 0.7*sin(2*pi*5*t) + 0.5*sin(2*pi*20*t) + 0.3*sin(2*pi*60*t) + 0.2*randn()
+    // En Python: FS_COMPLEJO=1024. Mapeo f_py -> f_hw: f_hw = f_py * Fs / FS_PY_COMPOSITE.
+    x = 0.7f * sinf(2.0f * (float)PI * (5.0f  * (float)Fs / FS_PY_COMPOSITE) * t)
+      + 0.5f * sinf(2.0f * (float)PI * (20.0f * (float)Fs / FS_PY_COMPOSITE) * t)
+      + 0.3f * sinf(2.0f * (float)PI * (60.0f * (float)Fs / FS_PY_COMPOSITE) * t)
+      + 0.2f * randn();
+
+#elif defined(SIGNAL_PY_VOICE)
+    // X_VOZ = exp(-3*t) * (sin(2*pi*120*t) + 0.5*sin(2*pi*250*t) + 0.3*sin(2*pi*400*t)) + 0.05*randn()
+    {
+      // En Python: FS_VOZ=2048. Mapeo f_py -> f_hw: f_hw = f_py * Fs / FS_PY_VOICE.
+      // Para conservar la forma de la envolvente en un frame de 128 muestras, aplicamos exp(-3*t01).
+      const float env = expf(-3.0f * t01);
+      x = env * (sinf(2.0f * (float)PI * (120.0f * (float)Fs / FS_PY_VOICE) * t)
+               + 0.5f * sinf(2.0f * (float)PI * (250.0f * (float)Fs / FS_PY_VOICE) * t)
+               + 0.3f * sinf(2.0f * (float)PI * (400.0f * (float)Fs / FS_PY_VOICE) * t))
+        + 0.05f * randn();
+    }
+
+#elif defined(SIGNAL_SINE)
+    // Legacy: senoide pura (FUND_HZ)
+    x = sinf(2.0f * (float)PI * (float)FUND_HZ * t);
 
 #elif defined(SIGNAL_SQUARE)
-    // Onda cuadrada 
-    wave = ((i % 16) < 8) ? 120.0 : -120.0;
+    // Legacy: cuadrada (aprox) a FUND_HZ
+    x = (sinf(2.0f * (float)PI * (float)FUND_HZ * t) >= 0.0f) ? 1.0f : -1.0f;
 
 #elif defined(SIGNAL_COMPOSITE)
-    // Señal compuesta con 3 armónicos 
-    wave = 80.0 * sin(angle)
-         + 25.0 * sin(2.0 * angle)   // 1000 Hz
-         + 10.0 * sin(3.0 * angle);  // 1500 Hz
+    // Legacy: compuesta 1x + 2x + 3x FUND_HZ
+    {
+      const float a = 2.0f * (float)PI * (float)FUND_HZ * t;
+      x = 1.0f * sinf(a) + 0.3125f * sinf(2.0f * a) + 0.125f * sinf(3.0f * a);
+    }
 
 #else
-  #error "Debes definir una señal: SIGNAL_SINE, SIGNAL_SQUARE o SIGNAL_COMPOSITE"
+  #error "Debes definir una señal: SIGNAL_PY_SIMPLE, SIGNAL_PY_COMPOSITE, SIGNAL_PY_VOICE o alguna legacy"
 #endif
 
-    signalTable[i] = (uint8_t)(127.5 + wave);
+    raw[i] = x;
+  }
+
+  float maxAbs = 1.0f;
+  for (uint16_t i = 0; i < SAMPLES; i++) {
+    const float a = fabsf(raw[i]);
+    if (a > maxAbs) maxAbs = a;
+  }
+  const float gain = DAC_PEAK / maxAbs;
+
+  for (uint16_t i = 0; i < SAMPLES; i++) {
+    const int s = (int)lroundf(128.0f + raw[i] * gain);
+    signalTable[i] = clampU8(s);
   }
 
   // Imprimir qué señal se está usando
   Serial.print("Señal activa: ");
-#if defined(SIGNAL_SINE)
-  Serial.printf("SENOIDAL pura — %.0f Hz\n", FUND_HZ);
+#if defined(SIGNAL_PY_SIMPLE)
+  Serial.println("PY SIMPLE: sin(2π·5t)");
+  Serial.println("  (f mapeada desde Fs=128 -> Fs=8000 para evitar DC)");
+#elif defined(SIGNAL_PY_COMPOSITE)
+  Serial.println("PY COMPUESTA: 0.7·sin(5) + 0.5·sin(20) + 0.3·sin(60) + ruido");
+  Serial.println("  (f mapeadas desde Fs=1024 -> Fs=8000)");
+#elif defined(SIGNAL_PY_VOICE)
+  Serial.println("PY VOZ: exp(-3t)·(sin(120)+0.5·sin(250)+0.3·sin(400)) + ruido");
+  Serial.println("  (f mapeadas desde Fs=2048 -> Fs=8000; envolvente usa t01)");
+#elif defined(SIGNAL_SINE)
+  Serial.printf("LEGACY SENOIDAL — %.0f Hz\n", FUND_HZ);
   Serial.println("  Esperado: 1 bin dominante");
 #elif defined(SIGNAL_SQUARE)
-  Serial.printf("CUADRADA — %.0f Hz\n", FUND_HZ);
-  Serial.println("  Esperado: bins en 500, 1500, 2500, 3500 Hz (armónicos impares)");
+  Serial.printf("LEGACY CUADRADA — %.0f Hz\n", FUND_HZ);
+  Serial.println("  Esperado: armónicos impares");
 #elif defined(SIGNAL_COMPOSITE)
-  Serial.printf("COMPUESTA — %.0f + %.0f + %.0f Hz\n", FUND_HZ, FUND_HZ*2, FUND_HZ*3);
+  Serial.printf("LEGACY COMPUESTA — %.0f + %.0f + %.0f Hz\n", FUND_HZ, FUND_HZ*2, FUND_HZ*3);
   Serial.println("  Esperado: 3 bins dominantes");
 #endif
 }
