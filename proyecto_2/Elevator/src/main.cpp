@@ -1,92 +1,138 @@
 #include <Arduino.h>
+#include <math.h>
 
-// ---------------- PINES ----------------
+// ---------------- PINES ARDUINO UNO / NANO ----------------
 
-// Potenciometro: extremo a 3.3V, extremo a GND, centro a GPIO34.
-const int potPin = 34;
+// HC-SR04 inferior: sensor abajo mirando hacia la cabina.
+const int trigPin = 5;
+const int echoPin = 6;
 
 // L298N canal A.
-const int motorIn1 = 26;
-const int motorIn2 = 27;
-const int motorPwm = 25; // ENA sin jumper
-
-// ---------------- PWM ----------------
-
-const int pwmChannel = 0;
-const int pwmFreq = 1000;
-const int pwmResolution = 8; // 0 a 255
+const int motorIn1 = 7;
+const int motorIn2 = 8;
+const int motorPwm = 9; // ENA sin jumper, pin PWM
 
 // ---------------- PISOS ----------------
 
 const int numPisos = 5;
-const int pisosADC[numPisos] = {
-    20,   // Piso 1
-    960,  // Piso 2
-    1930, // Piso 3
-    2640, // Piso 4
-    3370  // Piso 5
+
+// Calibrar estos valores viendo la distancia que imprime el monitor serial.
+// Si el sensor esta abajo, la distancia aumenta cuando el elevador sube.
+const float pisosCm[numPisos] = {
+    4.0,  // Piso 1
+    12.0, // Piso 2
+    20.0, // Piso 3
+    28.0, // Piso 4
+    36.0  // Piso 5
 };
 
 int pisoActualObjetivo = 0;
-int referencia = pisosADC[0];
+float referenciaCm = pisosCm[0];
 bool movimientoAutomatico = false;
 
 // Ajustes simples de movimiento.
-const int toleranciaLlegada = 35;
-const int errorParaIrLento = 220;
-const int pwmRapido = 230;
-const int pwmLento = 130;
+const float toleranciaLlegadaCm = 1.5;
+const float errorParaIrLentoCm = 5.0;
+const int pwmMin = 0;
+const int pwmMax = 255;
+const int pasoVelocidad = 10;
+const int aumentoRapido = 80;
+
+int velocidadMotor = 130;
 
 unsigned long tiempoSerial = 0;
 
-int leerPotenciometro() {
-  int suma = 0;
+float medirDistanciaUnaVezCm() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
 
-  for (int i = 0; i < 8; i++) {
-    suma += analogRead(potPin);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  unsigned long duracion = pulseIn(echoPin, HIGH, 30000);
+
+  if (duracion == 0) {
+    return -1.0;
   }
 
-  return suma / 8;
+  return duracion * 0.0343 / 2.0;
+}
+
+float leerDistanciaCm() {
+  float suma = 0.0;
+  int lecturasValidas = 0;
+
+  for (int i = 0; i < 5; i++) {
+    float distancia = medirDistanciaUnaVezCm();
+
+    if (distancia > 0.0) {
+      suma += distancia;
+      lecturasValidas++;
+    }
+
+    delay(8);
+  }
+
+  if (lecturasValidas == 0) {
+    return -1.0;
+  }
+
+  return suma / lecturasValidas;
 }
 
 void detenerMotor() {
   digitalWrite(motorIn1, LOW);
   digitalWrite(motorIn2, LOW);
-  ledcWrite(pwmChannel, 0);
+  analogWrite(motorPwm, 0);
 }
 
 void subirMotor(int pwm) {
   digitalWrite(motorIn1, HIGH);
   digitalWrite(motorIn2, LOW);
-  ledcWrite(pwmChannel, pwm);
+  analogWrite(motorPwm, constrain(pwm, pwmMin, pwmMax));
 }
 
 void bajarMotor(int pwm) {
   digitalWrite(motorIn1, LOW);
   digitalWrite(motorIn2, HIGH);
-  ledcWrite(pwmChannel, pwm);
+  analogWrite(motorPwm, constrain(pwm, pwmMin, pwmMax));
 }
 
 void imprimirAyuda() {
   Serial.println();
-  Serial.println("=== Ascensor simple ===");
+  Serial.println("=== Ascensor simple Arduino + HC-SR04 ===");
   Serial.println("1-5: ir al piso indicado");
   Serial.println("u: subir manual");
   Serial.println("d: bajar manual");
   Serial.println("s: detener");
+  Serial.println("+: subir velocidad");
+  Serial.println("-: bajar velocidad");
   Serial.println("h: ayuda");
   Serial.println();
 }
 
+void imprimirVelocidad() {
+  Serial.print("Velocidad PWM: ");
+  Serial.print(velocidadMotor);
+  Serial.println(" / 255");
+}
+
+void ajustarVelocidad(int cambio) {
+  velocidadMotor = constrain(velocidadMotor + cambio, pwmMin, pwmMax);
+  imprimirVelocidad();
+}
+
 void seleccionarPiso(int piso) {
   pisoActualObjetivo = piso;
-  referencia = pisosADC[piso];
+  referenciaCm = pisosCm[piso];
   movimientoAutomatico = true;
 
   Serial.print("Objetivo: piso ");
   Serial.print(piso + 1);
-  Serial.print(" | ADC ref: ");
-  Serial.println(referencia);
+  Serial.print(" | Ref: ");
+  Serial.print(referenciaCm, 1);
+  Serial.println(" cm");
 }
 
 void leerComandoSerial() {
@@ -105,14 +151,14 @@ void leerComandoSerial() {
     case 'u':
     case 'U':
       movimientoAutomatico = false;
-      subirMotor(pwmLento);
+      subirMotor(velocidadMotor);
       Serial.println("Manual: subir");
       break;
 
     case 'd':
     case 'D':
       movimientoAutomatico = false;
-      bajarMotor(pwmLento);
+      bajarMotor(velocidadMotor);
       Serial.println("Manual: bajar");
       break;
 
@@ -127,31 +173,51 @@ void leerComandoSerial() {
     case 'H':
       imprimirAyuda();
       break;
+
+    case '+':
+      ajustarVelocidad(pasoVelocidad);
+      break;
+
+    case '-':
+      ajustarVelocidad(-pasoVelocidad);
+      break;
   }
 }
 
-void controlarAscensor(int posicion) {
+void controlarAscensor(float distanciaCm) {
   if (!movimientoAutomatico) {
     return;
   }
 
-  int error = referencia - posicion;
-  int errorAbs = abs(error);
+  if (distanciaCm < 0.0) {
+    detenerMotor();
+    movimientoAutomatico = false;
+    Serial.println("Sin lectura del HC-SR04. Motor detenido por seguridad.");
+    return;
+  }
 
-  if (errorAbs <= toleranciaLlegada) {
+  float error = referenciaCm - distanciaCm;
+  float errorAbs = fabs(error);
+
+  if (errorAbs <= toleranciaLlegadaCm) {
     detenerMotor();
     movimientoAutomatico = false;
 
     Serial.print("Llegue al piso ");
     Serial.print(pisoActualObjetivo + 1);
-    Serial.print(" | Posicion: ");
-    Serial.println(posicion);
+    Serial.print(" | Distancia: ");
+    Serial.print(distanciaCm, 1);
+    Serial.println(" cm");
     return;
   }
 
-  int pwm = (errorAbs < errorParaIrLento) ? pwmLento : pwmRapido;
+  int pwm = velocidadMotor;
 
-  if (error > 0) {
+  if (errorAbs >= errorParaIrLentoCm) {
+    pwm = constrain(velocidadMotor + aumentoRapido, pwmMin, pwmMax);
+  }
+
+  if (error > 0.0) {
     subirMotor(pwm);
   } else {
     bajarMotor(pwm);
@@ -161,16 +227,13 @@ void controlarAscensor(int posicion) {
 void setup() {
   Serial.begin(115200);
 
-  analogReadResolution(12);
-  analogSetPinAttenuation(potPin, ADC_11db);
-
-  pinMode(potPin, INPUT);
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
   pinMode(motorIn1, OUTPUT);
   pinMode(motorIn2, OUTPUT);
+  pinMode(motorPwm, OUTPUT);
 
-  ledcSetup(pwmChannel, pwmFreq, pwmResolution);
-  ledcAttachPin(motorPwm, pwmChannel);
-
+  digitalWrite(trigPin, LOW);
   detenerMotor();
   imprimirAyuda();
 }
@@ -178,8 +241,8 @@ void setup() {
 void loop() {
   leerComandoSerial();
 
-  int posicion = leerPotenciometro();
-  controlarAscensor(posicion);
+  float distanciaCm = leerDistanciaCm();
+  controlarAscensor(distanciaCm);
 
   if (millis() - tiempoSerial >= 300) {
     tiempoSerial = millis();
@@ -187,12 +250,28 @@ void loop() {
     Serial.print("Piso objetivo: ");
     Serial.print(pisoActualObjetivo + 1);
     Serial.print(" | Ref: ");
-    Serial.print(referencia);
-    Serial.print(" | Pot ADC: ");
-    Serial.print(posicion);
+    Serial.print(referenciaCm, 1);
+    Serial.print(" cm | Distancia: ");
+
+    if (distanciaCm < 0.0) {
+      Serial.print("sin lectura");
+    } else {
+      Serial.print(distanciaCm, 1);
+      Serial.print(" cm");
+    }
+
     Serial.print(" | Error: ");
-    Serial.print(referencia - posicion);
+
+    if (distanciaCm < 0.0) {
+      Serial.print("N/A");
+    } else {
+      Serial.print(referenciaCm - distanciaCm, 1);
+      Serial.print(" cm");
+    }
+
     Serial.print(" | Auto: ");
-    Serial.println(movimientoAutomatico ? "SI" : "NO");
+    Serial.print(movimientoAutomatico ? "SI" : "NO");
+    Serial.print(" | PWM: ");
+    Serial.println(velocidadMotor);
   }
 }
