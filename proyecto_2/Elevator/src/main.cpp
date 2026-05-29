@@ -19,11 +19,11 @@ const int numPisos = 5;
 // Calibrar estos valores viendo la distancia que imprime el monitor serial.
 // Si el sensor esta abajo, la distancia aumenta cuando el elevador sube.
 const float pisosCm[numPisos] = {
-    4.0,  // Piso 1
-    12.0, // Piso 2
-    20.0, // Piso 3
-    28.0, // Piso 4
-    36.0  // Piso 5
+    4.45,  // Piso 1
+    14.18, // Piso 2
+    24.05, // Piso 3
+    36.20, // Piso 4
+    43.50  // Piso 5
 };
 
 int pisoActualObjetivo = 0;
@@ -31,14 +31,29 @@ float referenciaCm = pisosCm[0];
 bool movimientoAutomatico = false;
 
 // Ajustes simples de movimiento.
-const float toleranciaLlegadaCm = 1.5;
-const float errorParaIrLentoCm = 5.0;
+const float toleranciaLlegadaCm = 0.6;
+const int lecturasLlegadaNecesarias = 3;
 const int pwmMin = 0;
 const int pwmMax = 255;
+const int pwmMinMovimiento = 100;
 const int pasoVelocidad = 10;
-const int aumentoRapido = 80;
 
-int velocidadMotor = 130;
+// PID. Empieza con Ki pequeno para evitar que se pase mucho del piso.
+const float kp = 38.0;
+const float ki = 0.20;
+const float kd = 8.0;
+const float integralLimite = 80.0;
+const unsigned long intervaloPidMs = 60;
+
+float integralError = 0.0;
+float errorAnterior = 0.0;
+unsigned long ultimoPid = 0;
+bool pidInicializado = false;
+
+// En automatico, velocidadMotor funciona como limite maximo de PWM.
+int velocidadMotor = 180;
+int pwmActual = 0;
+int lecturasLlegada = 0;
 
 unsigned long tiempoSerial = 0;
 
@@ -85,18 +100,21 @@ void detenerMotor() {
   digitalWrite(motorIn1, LOW);
   digitalWrite(motorIn2, LOW);
   analogWrite(motorPwm, 0);
+  pwmActual = 0;
 }
 
 void subirMotor(int pwm) {
+  pwmActual = constrain(pwm, pwmMin, pwmMax);
   digitalWrite(motorIn1, HIGH);
   digitalWrite(motorIn2, LOW);
-  analogWrite(motorPwm, constrain(pwm, pwmMin, pwmMax));
+  analogWrite(motorPwm, pwmActual);
 }
 
 void bajarMotor(int pwm) {
+  pwmActual = constrain(pwm, pwmMin, pwmMax);
   digitalWrite(motorIn1, LOW);
   digitalWrite(motorIn2, HIGH);
-  analogWrite(motorPwm, constrain(pwm, pwmMin, pwmMax));
+  analogWrite(motorPwm, pwmActual);
 }
 
 void imprimirAyuda() {
@@ -113,20 +131,29 @@ void imprimirAyuda() {
 }
 
 void imprimirVelocidad() {
-  Serial.print("Velocidad PWM: ");
+  Serial.print("Velocidad PWM maxima: ");
   Serial.print(velocidadMotor);
   Serial.println(" / 255");
 }
 
 void ajustarVelocidad(int cambio) {
-  velocidadMotor = constrain(velocidadMotor + cambio, pwmMin, pwmMax);
+  velocidadMotor = constrain(velocidadMotor + cambio, pwmMinMovimiento, pwmMax);
   imprimirVelocidad();
+}
+
+void reiniciarPID() {
+  integralError = 0.0;
+  errorAnterior = 0.0;
+  ultimoPid = 0;
+  lecturasLlegada = 0;
+  pidInicializado = false;
 }
 
 void seleccionarPiso(int piso) {
   pisoActualObjetivo = piso;
   referenciaCm = pisosCm[piso];
   movimientoAutomatico = true;
+  reiniciarPID();
 
   Serial.print("Objetivo: piso ");
   Serial.print(piso + 1);
@@ -151,6 +178,7 @@ void leerComandoSerial() {
     case 'u':
     case 'U':
       movimientoAutomatico = false;
+      reiniciarPID();
       subirMotor(velocidadMotor);
       Serial.println("Manual: subir");
       break;
@@ -158,6 +186,7 @@ void leerComandoSerial() {
     case 'd':
     case 'D':
       movimientoAutomatico = false;
+      reiniciarPID();
       bajarMotor(velocidadMotor);
       Serial.println("Manual: bajar");
       break;
@@ -165,6 +194,7 @@ void leerComandoSerial() {
     case 's':
     case 'S':
       movimientoAutomatico = false;
+      reiniciarPID();
       detenerMotor();
       Serial.println("Motor detenido");
       break;
@@ -192,6 +222,7 @@ void controlarAscensor(float distanciaCm) {
   if (distanciaCm < 0.0) {
     detenerMotor();
     movimientoAutomatico = false;
+    reiniciarPID();
     Serial.println("Sin lectura del HC-SR04. Motor detenido por seguridad.");
     return;
   }
@@ -201,8 +232,14 @@ void controlarAscensor(float distanciaCm) {
 
   if (errorAbs <= toleranciaLlegadaCm) {
     detenerMotor();
-    movimientoAutomatico = false;
+    lecturasLlegada++;
 
+    if (lecturasLlegada < lecturasLlegadaNecesarias) {
+      return;
+    }
+
+    movimientoAutomatico = false;
+    reiniciarPID();
     Serial.print("Llegue al piso ");
     Serial.print(pisoActualObjetivo + 1);
     Serial.print(" | Distancia: ");
@@ -211,11 +248,40 @@ void controlarAscensor(float distanciaCm) {
     return;
   }
 
-  int pwm = velocidadMotor;
+  lecturasLlegada = 0;
 
-  if (errorAbs >= errorParaIrLentoCm) {
-    pwm = constrain(velocidadMotor + aumentoRapido, pwmMin, pwmMax);
+  unsigned long ahora = millis();
+
+  if (!pidInicializado) {
+    errorAnterior = error;
+    ultimoPid = ahora;
+    pidInicializado = true;
+    return;
   }
+
+  if (ultimoPid == 0) {
+    ultimoPid = ahora;
+  }
+
+  if (ahora - ultimoPid < intervaloPidMs) {
+    return;
+  }
+
+  float dt = (ahora - ultimoPid) / 1000.0;
+  ultimoPid = ahora;
+
+  integralError += error * dt;
+  integralError = constrain(integralError, -integralLimite, integralLimite);
+
+  float derivadaError = (error - errorAnterior) / dt;
+  errorAnterior = error;
+
+  float salidaPid = (kp * error) + (ki * integralError) + (kd * derivadaError);
+  bool pidVaHaciaElPiso = (error > 0.0 && salidaPid > 0.0) || (error < 0.0 && salidaPid < 0.0);
+
+  int pwm = pidVaHaciaElPiso ? (int)fabs(salidaPid) : pwmMinMovimiento;
+  int pwmMaximoPermitido = constrain(velocidadMotor, pwmMinMovimiento, pwmMax);
+  pwm = constrain(pwm, pwmMinMovimiento, pwmMaximoPermitido);
 
   if (error > 0.0) {
     subirMotor(pwm);
@@ -271,7 +337,9 @@ void loop() {
 
     Serial.print(" | Auto: ");
     Serial.print(movimientoAutomatico ? "SI" : "NO");
-    Serial.print(" | PWM: ");
-    Serial.println(velocidadMotor);
+    Serial.print(" | PWM max: ");
+    Serial.print(velocidadMotor);
+    Serial.print(" | PWM motor: ");
+    Serial.println(pwmActual);
   }
 }
