@@ -35,14 +35,16 @@ const float toleranciaLlegadaCm = 0.6;
 const int lecturasLlegadaNecesarias = 3;
 const int pwmMin = 0;
 const int pwmMax = 255;
-const int pwmMinMovimiento = 100;
+const int pwmMinMovimiento = 75;
 const int pasoVelocidad = 10;
+const float distanciaFrenadoCm = 10.0;
 
 // PID. Empieza con Ki pequeno para evitar que se pase mucho del piso.
-const float kp = 38.0;
-const float ki = 0.20;
-const float kd = 8.0;
+const float kp = 18.0;
+const float ki = 0.10;
+const float kd = 4.0;
 const float integralLimite = 80.0;
+const float salidaPidMaxEscala = 100.0;
 const unsigned long intervaloPidMs = 60;
 
 float integralError = 0.0;
@@ -51,7 +53,7 @@ unsigned long ultimoPid = 0;
 bool pidInicializado = false;
 
 // En automatico, velocidadMotor funciona como limite maximo de PWM.
-int velocidadMotor = 180;
+int velocidadMotor = pwmMax;
 int pwmActual = 0;
 int lecturasLlegada = 0;
 
@@ -279,8 +281,18 @@ void controlarAscensor(float distanciaCm) {
   float salidaPid = (kp * error) + (ki * integralError) + (kd * derivadaError);
   bool pidVaHaciaElPiso = (error > 0.0 && salidaPid > 0.0) || (error < 0.0 && salidaPid < 0.0);
 
-  int pwm = pidVaHaciaElPiso ? (int)fabs(salidaPid) : pwmMinMovimiento;
-  int pwmMaximoPermitido = constrain(velocidadMotor, pwmMinMovimiento, pwmMax);
+  float zonaFrenado = distanciaFrenadoCm - toleranciaLlegadaCm;
+  float proporcionFrenado = constrain((errorAbs - toleranciaLlegadaCm) / zonaFrenado, 0.0, 1.0);
+  int pwmMaxPorDistancia = pwmMinMovimiento + (int)((velocidadMotor - pwmMinMovimiento) * proporcionFrenado);
+  int pwmMaximoPermitido = constrain(pwmMaxPorDistancia, pwmMinMovimiento, velocidadMotor);
+  int pwm = pwmMinMovimiento;
+
+  if (pidVaHaciaElPiso) {
+    float salidaAbs = constrain(fabs(salidaPid), 0.0, salidaPidMaxEscala);
+    float proporcion = salidaAbs / salidaPidMaxEscala;
+    pwm = pwmMinMovimiento + (int)((pwmMaximoPermitido - pwmMinMovimiento) * proporcion);
+  }
+
   pwm = constrain(pwm, pwmMinMovimiento, pwmMaximoPermitido);
 
   if (error > 0.0) {
