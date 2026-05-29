@@ -12,9 +12,15 @@ const int motorIn1 = 7;
 const int motorIn2 = 8;
 const int motorPwm = 9; // ENA sin jumper, pin PWM
 
-// ---------------- PISOS ----------------
-
 const int numPisos = 5;
+
+// Botones de pisos con INPUT_PULLUP: un lado al pin y el otro a GND.
+const int botonesPiso[numPisos] = {2, 3, 4, 10, 11};
+const unsigned long debounceBotonMs = 180;
+unsigned long ultimoBotonMs[numPisos] = {0, 0, 0, 0, 0};
+int estadoBotonAnterior[numPisos] = {HIGH, HIGH, HIGH, HIGH, HIGH};
+
+// ---------------- PISOS ----------------
 
 // Calibrar estos valores viendo la distancia que imprime el monitor serial.
 // Si el sensor esta abajo, la distancia aumenta cuando el elevador sube.
@@ -32,30 +38,41 @@ bool movimientoAutomatico = false;
 
 // Ajustes simples de movimiento.
 const float toleranciaLlegadaCm = 0.6;
+const float toleranciaLlegadaPiso1Cm = 1.2;
+const float toleranciaCruceLlegadaCm = 1.2;
 const int lecturasLlegadaNecesarias = 3;
 const int pwmMin = 0;
 const int pwmMax = 255;
 const int pwmMinMovimiento = 75;
+const float errorMinimoParaPwmMinCm = 2.0;
 const int pasoVelocidad = 10;
-const float distanciaFrenadoCm = 10.0;
 
-// PID. Empieza con Ki pequeno para evitar que se pase mucho del piso.
+// PID digital discreto. Se ejecuta cada intervaloPidMs como periodo de muestreo.
 const float kp = 18.0;
 const float ki = 0.10;
 const float kd = 4.0;
 const float integralLimite = 80.0;
-const float salidaPidMaxEscala = 100.0;
 const unsigned long intervaloPidMs = 60;
+
+struct ResultadoPID {
+  float p;
+  float i;
+  float d;
+  float salida;
+};
 
 float integralError = 0.0;
 float errorAnterior = 0.0;
 unsigned long ultimoPid = 0;
 bool pidInicializado = false;
 
-// En automatico, velocidadMotor funciona como limite maximo de PWM.
+// Esta velocidad se usa solo para movimiento manual con u/d.
 int velocidadMotor = pwmMax;
 int pwmActual = 0;
 int lecturasLlegada = 0;
+const char *direccionActual = "DETENIDO";
+
+ResultadoPID ultimoPID = {0.0, 0.0, 0.0, 0.0};
 
 unsigned long tiempoSerial = 0;
 
@@ -103,10 +120,12 @@ void detenerMotor() {
   digitalWrite(motorIn2, LOW);
   analogWrite(motorPwm, 0);
   pwmActual = 0;
+  direccionActual = "DETENIDO";
 }
 
 void subirMotor(int pwm) {
   pwmActual = constrain(pwm, pwmMin, pwmMax);
+  direccionActual = "SUBIR";
   digitalWrite(motorIn1, HIGH);
   digitalWrite(motorIn2, LOW);
   analogWrite(motorPwm, pwmActual);
@@ -114,6 +133,7 @@ void subirMotor(int pwm) {
 
 void bajarMotor(int pwm) {
   pwmActual = constrain(pwm, pwmMin, pwmMax);
+  direccionActual = "BAJAR";
   digitalWrite(motorIn1, LOW);
   digitalWrite(motorIn2, HIGH);
   analogWrite(motorPwm, pwmActual);
@@ -123,17 +143,19 @@ void imprimirAyuda() {
   Serial.println();
   Serial.println("=== Ascensor simple Arduino + HC-SR04 ===");
   Serial.println("1-5: ir al piso indicado");
+  Serial.println("Botones D2,D3,D4,D10,D11: pisos 1-5");
   Serial.println("u: subir manual");
   Serial.println("d: bajar manual");
   Serial.println("s: detener");
-  Serial.println("+: subir velocidad");
-  Serial.println("-: bajar velocidad");
+  Serial.println("+: subir velocidad manual");
+  Serial.println("-: bajar velocidad manual");
+  Serial.println("b: ver estado de botones");
   Serial.println("h: ayuda");
   Serial.println();
 }
 
 void imprimirVelocidad() {
-  Serial.print("Velocidad PWM maxima: ");
+  Serial.print("Velocidad PWM manual: ");
   Serial.print(velocidadMotor);
   Serial.println(" / 255");
 }
@@ -149,6 +171,58 @@ void reiniciarPID() {
   ultimoPid = 0;
   lecturasLlegada = 0;
   pidInicializado = false;
+  ultimoPID.p = 0.0;
+  ultimoPID.i = 0.0;
+  ultimoPID.d = 0.0;
+  ultimoPID.salida = 0.0;
+}
+
+ResultadoPID calcularPID(float error, float dt) {
+  ResultadoPID resultado;
+
+  resultado.p = kp * error;
+  resultado.d = kd * (error - errorAnterior) / dt;
+
+  float integralTentativa = integralError + (error * dt);
+  integralTentativa = constrain(integralTentativa, -integralLimite, integralLimite);
+
+  float salidaTentativa = resultado.p + (ki * integralTentativa) + resultado.d;
+  bool saturadoAlto = salidaTentativa > pwmMax;
+  bool saturadoBajo = salidaTentativa < -pwmMax;
+  bool errorAyudaSalir = (saturadoAlto && error < 0.0) || (saturadoBajo && error > 0.0);
+
+  // Anti-windup: si la salida esta saturada, no seguimos cargando integral
+  // salvo cuando el error ayuda a salir de esa saturacion.
+  if ((!saturadoAlto && !saturadoBajo) || errorAyudaSalir) {
+    integralError = integralTentativa;
+  }
+
+  integralError = constrain(integralError, -integralLimite, integralLimite);
+
+  resultado.i = ki * integralError;
+  resultado.salida = resultado.p + resultado.i + resultado.d;
+
+  errorAnterior = error;
+  ultimoPID = resultado;
+
+  return resultado;
+}
+
+void imprimirEstadoBotones() {
+  Serial.print("Botones: ");
+
+  for (int i = 0; i < numPisos; i++) {
+    Serial.print("P");
+    Serial.print(i + 1);
+    Serial.print("=");
+    Serial.print(digitalRead(botonesPiso[i]) == LOW ? "PRESIONADO" : "suelto");
+
+    if (i < numPisos - 1) {
+      Serial.print(" | ");
+    }
+  }
+
+  Serial.println();
 }
 
 void seleccionarPiso(int piso) {
@@ -206,6 +280,11 @@ void leerComandoSerial() {
       imprimirAyuda();
       break;
 
+    case 'b':
+    case 'B':
+      imprimirEstadoBotones();
+      break;
+
     case '+':
       ajustarVelocidad(pasoVelocidad);
       break;
@@ -214,6 +293,37 @@ void leerComandoSerial() {
       ajustarVelocidad(-pasoVelocidad);
       break;
   }
+}
+
+void leerBotonesPisos() {
+  unsigned long ahora = millis();
+
+  for (int i = 0; i < numPisos; i++) {
+    int estadoActual = digitalRead(botonesPiso[i]);
+    bool botonPresionado = estadoBotonAnterior[i] == HIGH && estadoActual == LOW;
+
+    if (botonPresionado && ahora - ultimoBotonMs[i] >= debounceBotonMs) {
+      ultimoBotonMs[i] = ahora;
+      seleccionarPiso(i);
+
+      Serial.print("Boton: piso ");
+      Serial.println(i + 1);
+    }
+
+    estadoBotonAnterior[i] = estadoActual;
+  }
+}
+
+void confirmarLlegada(float distanciaCm) {
+  detenerMotor();
+  movimientoAutomatico = false;
+  reiniciarPID();
+
+  Serial.print("Llegue al piso ");
+  Serial.print(pisoActualObjetivo + 1);
+  Serial.print(" | Distancia: ");
+  Serial.print(distanciaCm, 1);
+  Serial.println(" cm");
 }
 
 void controlarAscensor(float distanciaCm) {
@@ -229,10 +339,17 @@ void controlarAscensor(float distanciaCm) {
     return;
   }
 
+  // Sensor abajo: la distancia aumenta al subir.
+  // Error positivo => la referencia esta mas arriba => el motor debe subir.
+  // Error negativo => la referencia esta mas abajo => el motor debe bajar.
   float error = referenciaCm - distanciaCm;
   float errorAbs = fabs(error);
+  float toleranciaActualCm = (pisoActualObjetivo == 0) ? toleranciaLlegadaPiso1Cm : toleranciaLlegadaCm;
+  bool cruzoReferencia = pidInicializado &&
+                         ((errorAnterior < 0.0 && error > 0.0) ||
+                          (errorAnterior > 0.0 && error < 0.0));
 
-  if (errorAbs <= toleranciaLlegadaCm) {
+  if (errorAbs <= toleranciaActualCm) {
     detenerMotor();
     lecturasLlegada++;
 
@@ -240,13 +357,12 @@ void controlarAscensor(float distanciaCm) {
       return;
     }
 
-    movimientoAutomatico = false;
-    reiniciarPID();
-    Serial.print("Llegue al piso ");
-    Serial.print(pisoActualObjetivo + 1);
-    Serial.print(" | Distancia: ");
-    Serial.print(distanciaCm, 1);
-    Serial.println(" cm");
+    confirmarLlegada(distanciaCm);
+    return;
+  }
+
+  if (cruzoReferencia && errorAbs <= toleranciaCruceLlegadaCm) {
+    confirmarLlegada(distanciaCm);
     return;
   }
 
@@ -272,33 +388,23 @@ void controlarAscensor(float distanciaCm) {
   float dt = (ahora - ultimoPid) / 1000.0;
   ultimoPid = ahora;
 
-  integralError += error * dt;
-  integralError = constrain(integralError, -integralLimite, integralLimite);
+  ResultadoPID pid = calcularPID(error, dt);
 
-  float derivadaError = (error - errorAnterior) / dt;
-  errorAnterior = error;
+  // La salida firmada del PID define direccion y magnitud del motor.
+  float pwmCalculado = fabs(pid.salida);
+  pwmCalculado = constrain(pwmCalculado, (float)pwmMin, (float)pwmMax);
+  int pwm = (int)pwmCalculado;
 
-  float salidaPid = (kp * error) + (ki * integralError) + (kd * derivadaError);
-  bool pidVaHaciaElPiso = (error > 0.0 && salidaPid > 0.0) || (error < 0.0 && salidaPid < 0.0);
-
-  float zonaFrenado = distanciaFrenadoCm - toleranciaLlegadaCm;
-  float proporcionFrenado = constrain((errorAbs - toleranciaLlegadaCm) / zonaFrenado, 0.0, 1.0);
-  int pwmMaxPorDistancia = pwmMinMovimiento + (int)((velocidadMotor - pwmMinMovimiento) * proporcionFrenado);
-  int pwmMaximoPermitido = constrain(pwmMaxPorDistancia, pwmMinMovimiento, velocidadMotor);
-  int pwm = pwmMinMovimiento;
-
-  if (pidVaHaciaElPiso) {
-    float salidaAbs = constrain(fabs(salidaPid), 0.0, salidaPidMaxEscala);
-    float proporcion = salidaAbs / salidaPidMaxEscala;
-    pwm = pwmMinMovimiento + (int)((pwmMaximoPermitido - pwmMinMovimiento) * proporcion);
+  if (errorAbs > errorMinimoParaPwmMinCm && pwmCalculado > 0.0 && pwmCalculado < pwmMinMovimiento) {
+    pwm = pwmMinMovimiento;
   }
 
-  pwm = constrain(pwm, pwmMinMovimiento, pwmMaximoPermitido);
-
-  if (error > 0.0) {
+  if (pid.salida > 0.0) {
     subirMotor(pwm);
-  } else {
+  } else if (pid.salida < 0.0) {
     bajarMotor(pwm);
+  } else {
+    detenerMotor();
   }
 }
 
@@ -311,6 +417,11 @@ void setup() {
   pinMode(motorIn2, OUTPUT);
   pinMode(motorPwm, OUTPUT);
 
+  for (int i = 0; i < numPisos; i++) {
+    pinMode(botonesPiso[i], INPUT_PULLUP);
+    estadoBotonAnterior[i] = digitalRead(botonesPiso[i]);
+  }
+
   digitalWrite(trigPin, LOW);
   detenerMotor();
   imprimirAyuda();
@@ -318,6 +429,7 @@ void setup() {
 
 void loop() {
   leerComandoSerial();
+  leerBotonesPisos();
 
   float distanciaCm = leerDistanciaCm();
   controlarAscensor(distanciaCm);
@@ -349,9 +461,17 @@ void loop() {
 
     Serial.print(" | Auto: ");
     Serial.print(movimientoAutomatico ? "SI" : "NO");
-    Serial.print(" | PWM max: ");
-    Serial.print(velocidadMotor);
-    Serial.print(" | PWM motor: ");
-    Serial.println(pwmActual);
+    Serial.print(" | P: ");
+    Serial.print(ultimoPID.p, 2);
+    Serial.print(" | I: ");
+    Serial.print(ultimoPID.i, 2);
+    Serial.print(" | D: ");
+    Serial.print(ultimoPID.d, 2);
+    Serial.print(" | Salida PID: ");
+    Serial.print(ultimoPID.salida, 2);
+    Serial.print(" | PWM aplicado: ");
+    Serial.print(pwmActual);
+    Serial.print(" | Direccion: ");
+    Serial.println(direccionActual);
   }
 }
