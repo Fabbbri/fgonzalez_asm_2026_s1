@@ -25,10 +25,10 @@ int estadoBotonAnterior[numPisos] = {HIGH, HIGH, HIGH, HIGH, HIGH};
 // Calibrar estos valores viendo la distancia que imprime el monitor serial.
 // Si el sensor esta abajo, la distancia aumenta cuando el elevador sube.
 const float pisosCm[numPisos] = {
-    4.45,  // Piso 1
+    4.00,  // Piso 1
     14.18, // Piso 2
     24.05, // Piso 3
-    36.20, // Piso 4
+    35.20, // Piso 4
     43.50  // Piso 5
 };
 
@@ -395,7 +395,7 @@ void controlarAscensor(float distanciaCm) {
   pwmCalculado = constrain(pwmCalculado, (float)pwmMin, (float)pwmMax);
   int pwm = (int)pwmCalculado;
 
-  if (errorAbs > errorMinimoParaPwmMinCm && pwmCalculado > 0.0 && pwmCalculado < pwmMinMovimiento) {
+  if (pwmCalculado > 0.0 && pwmCalculado < pwmMinMovimiento) {
     pwm = pwmMinMovimiento;
   }
 
